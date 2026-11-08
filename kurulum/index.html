@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Bi Koltuk Kurulum</title>
+<style>
+:root { --bg: #EDF0F4; --card: #FFFFFF; --ink: #0F1A2B; --mut: #4A5668; --line: #C9D2DE; --ok: #146444; --on: #FFFFFF; --red: #B3202E; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0C121C; --card: #151D2B; --ink: #EDF1F7; --mut: #A9B4C4; --line: #2E3B52; --ok: #5FD3A0; --on: #0C121C; --red: #F07585; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+main { max-width: 560px; margin: 0 auto; padding: 16px 16px 48px; }
+h1 { font-size: 26px; margin: 8px 0 4px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 14px 0; }
+.n { display: inline-flex; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--on); align-items: center; justify-content: center; font-weight: 800; margin-right: 8px; }
+h2 { font-size: 19px; margin: 0 0 8px; display: flex; align-items: center; }
+p { margin: 6px 0; }
+.mut { color: var(--mut); font-size: 15px; }
+.btn { display: flex; width: 100%; min-height: 54px; align-items: center; justify-content: center; border-radius: 12px; border: 2px solid var(--ink);
+  background: var(--ink); color: var(--on); font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; margin-top: 10px; }
+.btn.sec { background: var(--card); color: var(--ink); }
+.btn.done { background: var(--ok); border-color: var(--ok); color: #fff; }
+code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 15px; word-break: break-all; }
+textarea { width: 100%; height: 140px; margin-top: 10px; font: 12px/1.4 ui-monospace, monospace; border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: var(--bg); color: var(--ink); }
+.ok { color: var(--ok); font-weight: 700; }
+details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: flex; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+<h1>Bi Koltuk veritabanı eki</h1>
+<p class="mut">Telefondan 3 dakikada yapılır. Adımları sırayla izle.</p>
+
+<section class="card">
+  <h2><span class="n">1</span>Yönetici hesabın</h2>
+  <p>Uygulamada <b>Berber</b> sekmesinden <code>alperen.gs.ceylan@gmail.com</code> ile kayıtlı olmalısın. Kayıtlıysan bu adımı geç.</p>
+  <a class="btn sec" href="../#/berber" target="_blank" rel="noopener">Uygulamayı aç, kayıt ol</a>
+</section>
+
+<section class="card">
+  <h2><span class="n">2</span>Kodu kopyala</h2>
+  <button class="btn" id="copy4" data-part="4">4. parçayı kopyala</button>
+  <p class="mut" id="fb4" hidden>Kopyalanamadı. Aşağıdaki kutuya uzun bas, <b>Tümünü seç</b> ve <b>Kopyala</b> de.</p>
+  <textarea id="ta4" readonly hidden aria-label="4. parçanın kodu"></textarea>
+</section>
+
+<section class="card">
+  <h2><span class="n">3</span>Supabase'de çalıştır</h2>
+  <p>Aşağıdaki düğme Supabase'de boş bir sorgu sayfası açar. Gerekirse Google hesabınla giriş yap.</p>
+  <a class="btn" href="https://supabase.com/dashboard/project/oasjmcfknvhqwwdbugeo/sql/new" target="_blank" rel="noopener">SQL düzenleyiciyi aç</a>
+  <p style="margin-top:12px">Açılan sayfada yazı alanına uzun bas, <b>Yapıştır</b> de. Sonra yeşil <b>Run</b> (Çalıştır) düğmesine dokun.</p>
+</section>
+
+<section class="card">
+  <h2><span class="n">4</span>Sonucu kontrol et</h2>
+  <p>Altta şu yazmalı:</p>
+  <p class="ok">Bölüm 4 tamam: yönetici hesabı tanımlandı</p>
+  <p class="mut">"Yönetici bulunamadı" yazarsa 1. adımdaki kaydı yap ve 2. ile 3. adımı tekrarla. Tekrar çalıştırmak güvenli, hiçbir veri silinmez.</p>
+</section>
+
+<details class="card">
+  <summary>İlk kurulum parçaları (1, 2, 3)</summary>
+  <p class="mut">Bunlar zaten çalıştırıldı. Yeni bir Supabase projesi kurarsan sırayla kullan, en son 4. parçayı çalıştır.</p>
+  <button class="btn sec" data-part="1">1. parçayı kopyala</button>
+  <button class="btn sec" data-part="2">2. parçayı kopyala</button>
+  <button class="btn sec" data-part="3">3. parçayı kopyala</button>
+</details>
+</main>
+<script>
+(function () {
+  var texts = {};
+  [1, 2, 3, 4].forEach(function (n) {
+    fetch(n + '.txt', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (t) { texts[n] = t; if (n === 4) document.getElementById('ta4').value = t; })
+      .catch(function () {});
+  });
+  function fallback(btn, n) {
+    btn.textContent = n + '. parçayı kopyala';
+    if (n === 4) {
+      document.getElementById('fb4').hidden = false;
+      var ta = document.getElementById('ta4');
+      ta.hidden = false; ta.focus(); ta.select();
+    } else {
+      window.open(n + '.txt', '_blank', 'noopener');
+    }
+  }
+  document.querySelectorAll('[data-part]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var n = Number(btn.dataset.part);
+      var t = texts[n];
+      if (!t) { fallback(btn, n); return; }
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(btn, n); return; }
+      navigator.clipboard.writeText(t).then(function () {
+        btn.textContent = n + '. parça kopyalandı ✓';
+        btn.classList.add('done');
+      }, function () { fallback(btn, n); });
+    });
+  });
+})();
+</script>
+</body>
+</html>
