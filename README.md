@@ -1,1 +1,1 @@
-# bikoltuk.githup.io
+# bikoltuk.github.io
