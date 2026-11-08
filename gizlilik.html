@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gizlilik politikası | Bi Koltuk</title>
+<link rel="stylesheet" href="app.css">
+<style>main { padding-bottom: 48px; } li { margin: 6px 0; }</style>
+</head>
+<body>
+<header class="top"><a class="brand" href="./#/" data-cfg="appName">Bi Koltuk</a></header>
+<main>
+<h1>Gizlilik politikası ve KVKK aydınlatma metni</h1>
+<p class="mut">Son güncelleme: 8 Kasım 2026</p>
+
+<h2>Veri sorumlusu</h2>
+<p><b data-cfg="ownerName">[Ad Soyad]</b>, <span data-cfg="appName">Bi Koltuk</span> uygulamasının ve web sitesinin sahibidir. Bize <b data-cfg="contactEmail">[e-posta]</b> adresinden ulaşabilirsin.</p>
+
+<h2>Randevu alan müşterilerden toplanan veriler</h2>
+<ul>
+  <li>Adın ve soyadın, cep telefonu numaran</li>
+  <li>Randevu bilgileri: dükkan, personel, hizmet, tarih, saat ve fiyat</li>
+  <li>Yazarsan yorumun ve puanın. Yorumda sadece adın ve soyadının baş harfi görünür.</li>
+</ul>
+<p>Müşteriler için hesap açılmaz.</p>
+
+<h2>Berberlerden toplanan veriler</h2>
+<ul>
+  <li>E-posta adresi ve şifre (şifre şifrelenmiş olarak saklanır)</li>
+  <li>Dükkan bilgileri: ad, adres, semt, telefon, Instagram kullanıcı adı, dükkan konumu ve fotoğraflar. Bu bilgiler uygulamada herkese açık görünür.</li>
+  <li>Personel, hizmet, fiyat ve çalışma saatleri</li>
+  <li>Berberin müşterileri için yazdığı notlar (sadece o berber görür)</li>
+</ul>
+
+<h2>Sadece telefonunda kalan bilgiler</h2>
+<p>Favori dükkanların, seçtiğin semt ya da konumun, aldığın randevuların anahtarları ve "Bilgilerimi hatırla" seçersen adın ve telefonun sadece telefonunda saklanır, bize gönderilmez. Dükkanlara olan mesafe telefonunda hesaplanır; konumun sunucuya gönderilmez.</p>
+
+<h2>Verileri neden işliyoruz</h2>
+<ul>
+  <li>Randevunu oluşturmak ve randevu aldığın dükkana iletmek</li>
+  <li>Dükkanın gerekirse seninle iletişime geçebilmesi (hatırlatma, iptal, boşalan saat bildirimi)</li>
+  <li>Berberin randevularını, müşterilerini ve kazancını yönetebilmesi</li>
+  <li>Yorumların ve puanların gösterilmesi</li>
+</ul>
+<p>Hukuki sebep: 6698 sayılı KVKK madde 5/2-c (bir sözleşmenin kurulması ve ifası için gerekli olması) ve madde 5/2-f (meşru menfaat).</p>
+
+<h2>Kimlerle paylaşılır</h2>
+<p>Randevu bilgilerin sadece randevu aldığın dükkanla paylaşılır. Reklam ya da pazarlama için kimseyle paylaşılmaz, satılmaz. Veriler, barındırma hizmeti aldığımız Supabase'in Avrupa Birliği'ndeki (Frankfurt) sunucularında saklanır. Bu, KVKK madde 9 kapsamında yurt dışına aktarım sayılır. Uygulamanın web sitesi GitHub Pages üzerinde yayınlanır.</p>
+
+<h2>Ne kadar süre saklanır</h2>
+<p>Randevu ve müşteri kayıtları, dükkan hesabı silinene kadar saklanır. Berber hesabını sildiğinde dükkana ait tüm randevu, müşteri, yorum ve fotoğraf kayıtları kalıcı olarak silinir. Sen de istediğin zaman verilerinin silinmesini isteyebilirsin.</p>
+
+<h2>Hakların</h2>
+<p>KVKK madde 11 uyarınca verilerinin işlenip işlenmediğini öğrenme, bilgi isteme, düzeltilmesini ya da silinmesini isteme ve itiraz etme hakkın var. Başvurunu <b data-cfg="contactEmail">[e-posta]</b> adresine gönder; en geç 30 gün içinde yanıtlarız.</p>
+
+<h2>Hesap ve veri silme</h2>
+<p>Nasıl silineceği <a href="hesap-silme.html">hesap ve veri silme</a> sayfasında anlatılıyor.</p>
+
+<h2>Güvenlik</h2>
+<p>Bağlantılar şifrelidir (HTTPS). Her berber sadece kendi dükkanının verisini görebilir; müşterilerin telefon numaraları başka müşterilere gösterilmez.</p>
+</main>
+<script src="config.js"></script>
+<script>
+  (function () {
+    var c = window.RANDEVU_CONFIG || {};
+    document.querySelectorAll('[data-cfg]').forEach(function (el) { var v = c[el.getAttribute('data-cfg')]; if (v) el.textContent = v; });
+  }());
+</script>
+</body>
+</html>

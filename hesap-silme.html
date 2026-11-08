@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hesap ve veri silme | Bi Koltuk</title>
+<link rel="stylesheet" href="app.css">
+<style>main { padding-bottom: 48px; } li { margin: 6px 0; }</style>
+</head>
+<body>
+<header class="top"><a class="brand" href="./#/" data-cfg="appName">Bi Koltuk</a></header>
+<main>
+<h1>Hesap ve veri silme</h1>
+<p><b data-cfg="appName">Bi Koltuk</b> uygulaması, geliştirici: <b data-cfg="ownerName">[Ad Soyad]</b></p>
+
+<h2>Berber hesabını uygulamadan silme</h2>
+<ol>
+  <li>Uygulamada alttaki <b>Berber</b> sekmesine dokun ve giriş yap.</li>
+  <li><b>Ayarlar</b>'a gir, en alttaki <b>Hesap</b> bölümünde <b>Hesabımı sil</b>'e dokun.</li>
+  <li>Kutuya <b>SİL</b> yaz ve <b>Hesabımı kalıcı olarak sil</b>'e dokun.</li>
+</ol>
+<p>Silme hemen gerçekleşir. Silinenler: hesabın (e-posta ve şifre), dükkan bilgilerin, fotoğrafların, personel ve hizmetlerin, tüm randevu kayıtları, müşteri notları ve dükkana yazılan yorumlar. Hiçbiri saklanmaz.</p>
+
+<h2>E-postayla silme isteği</h2>
+<p>Uygulamaya giremiyorsan, hesabının e-posta adresinden <b data-cfg="contactEmail">[e-posta]</b> adresine "Hesap silme" konulu bir e-posta gönder. Hesabını ve tüm verilerini en geç 30 gün içinde sileriz.</p>
+
+<h2>Müşteriler (randevu alanlar)</h2>
+<p>Müşteriler için hesap açılmaz. Randevu kayıtlarındaki adının ve telefonunun silinmesini istersen, randevu aldığın telefon numarasını yazarak <b data-cfg="contactEmail">[e-posta]</b> adresine e-posta gönder. Kayıtları en geç 30 gün içinde sileriz. Telefonunda saklanan favorilerini ve randevu anahtarlarını silmek için uygulamanın verilerini telefon ayarlarından temizleyebilirsin.</p>
+
+<p><a href="gizlilik.html">Gizlilik politikası</a></p>
+</main>
+<script src="config.js"></script>
+<script>
+  (function () {
+    var c = window.RANDEVU_CONFIG || {};
+    document.querySelectorAll('[data-cfg]').forEach(function (el) { var v = c[el.getAttribute('data-cfg')]; if (v) el.textContent = v; });
+  }());
+</script>
+</body>
+</html>

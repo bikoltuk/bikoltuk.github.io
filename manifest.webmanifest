@@ -1,0 +1,24 @@
+{
+  "id": "./",
+  "name": "Bi Koltuk: Berber Randevusu",
+  "short_name": "Bi Koltuk",
+  "description": "Berberinden saniyeler içinde randevu al. Berberler için randevu ve dükkan yönetimi.",
+  "lang": "tr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F1A2B",
+  "theme_color": "#0F1A2B",
+  "categories": ["lifestyle", "business"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Randevularım", "url": "./#/randevularim", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Berber paneli", "url": "./#/berber", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

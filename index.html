@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bi Koltuk</title>
+<meta name="description" content="Berberinden saniyeler içinde randevu al. Berberler için randevu ve dükkan yönetimi.">
+<meta name="theme-color" content="#0F1A2B">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">İçeriğe geç</a>
+<header class="top"><a class="brand" href="#/" id="brand">Bi Koltuk</a></header>
+<main id="main" tabindex="-1"><p class="mut">Yükleniyor…</p></main>
+<nav class="tabs" aria-label="Ana menü">
+  <a href="#/" data-tab="discover"><span aria-hidden="true" class="ti">⌕</span>Keşfet</a>
+  <a href="#/randevularim" data-tab="mine"><span aria-hidden="true" class="ti">◷</span>Randevularım</a>
+  <a href="#/berber" data-tab="barber"><span aria-hidden="true" class="ti">✂</span>Berber</a>
+</nav>
+<div id="toast" role="status" aria-live="polite"></div>
+<noscript><p class="wrap">Bu uygulama için JavaScript gerekiyor.</p></noscript>
+<datalist id="svc-names"><option value="Saç"><option value="Sakal"><option value="Saç + sakal"><option value="Çocuk tıraşı"><option value="Fön"><option value="Cilt bakımı"></datalist>
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>
