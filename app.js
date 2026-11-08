@@ -90,6 +90,7 @@
     AUTH: 'Oturumun sona erdi. Tekrar giriş yap.',
     NOT_AUTHENTICATED: 'Oturumun sona erdi. Tekrar giriş yap.',
     NOT_ADMIN: 'Bu ekran sadece yönetici içindir.',
+    SETUP_MISSING: 'Kurulum eksik: veritabanı eki (4. parça) çalıştırılmamış. bikoltuk.github.io/kurulum sayfasındaki adımları yap.',
     OWNER_NAME_INVALID: 'Adını ve soyadını yaz.',
     UPLOAD: 'Fotoğraf yüklenemedi. JPG veya PNG bir fotoğraf seç.',
     UNKNOWN: 'Bir şeyler ters gitti. Tekrar dene.',
@@ -103,6 +104,7 @@
     const k = KNOWN.find((c) => text.includes(c));
     if (k) return k;
     if (d.code === '23P01') return 'SLOT_TAKEN';
+    if (['PGRST202', 'PGRST204', 'PGRST205', '42703', '42P01', '42883'].includes(d.code)) return 'SETUP_MISSING';
     if (d.code === '23505') return 'DUPLICATE';
     if (d.code === '42501') return 'FORBIDDEN';
     if (/invalid_credentials|Invalid login/i.test(text)) return 'BAD_LOGIN';
@@ -119,6 +121,23 @@
   // ===================================================================
   // Supabase istemcisi (kütüphanesiz, doğrudan REST)
   // ===================================================================
+  // Üstteki berber direği şeridi, sunucuyla konuşulurken döner
+  const loader = {
+    n: 0, timer: 0, shownAt: 0,
+    start() {
+      if (this.n++ > 0) return;
+      clearTimeout(this.timer);
+      if (document.documentElement.classList.contains('loading')) return;
+      this.timer = setTimeout(() => { this.shownAt = Date.now(); document.documentElement.classList.add('loading'); }, 100);
+    },
+    stop() {
+      if (--this.n > 0) return;
+      this.n = 0;
+      clearTimeout(this.timer);
+      if (!document.documentElement.classList.contains('loading')) return;
+      this.timer = setTimeout(() => { if (!this.n) document.documentElement.classList.remove('loading'); }, Math.max(0, 700 - (Date.now() - this.shownAt)));
+    },
+  };
   const api = {
     base: String(CFG.supabaseUrl || '').replace(/\/+$/, ''),
     key: String(CFG.supabaseKey || ''),
@@ -159,8 +178,12 @@
       if (body instanceof Blob) payload = body;
       else if (body !== undefined) { payload = JSON.stringify(body); h['Content-Type'] = 'application/json'; }
       let res;
-      try { res = await fetch(this.base + path, { method, headers: h, body: payload }); } catch { throw new AppError('NETWORK'); }
-      const text = await res.text();
+      let text;
+      loader.start();
+      try {
+        try { res = await fetch(this.base + path, { method, headers: h, body: payload }); } catch { throw new AppError('NETWORK'); }
+        text = await res.text();
+      } finally { loader.stop(); }
       let data = null;
       try { data = text ? JSON.parse(text) : null; } catch { data = text; }
       if (!res.ok) {
@@ -629,7 +652,7 @@
     </form>`}`;
   }
   function onboardHtml() {
-    return `<h1>Dükkanını oluştur</h1>
+    return `${setupBanner()}<h1>Dükkanını oluştur</h1>
     <form data-form="onboard" class="card" novalidate>
       <label for="o-name">Dükkan adı</label><input id="o-name" name="name" required minlength="2" maxlength="80" placeholder="Örn. Makas &amp; Ustura">
       <label for="o-dist">Semt</label><select id="o-dist" name="district">${Object.keys(PLACES).map((k) => `<option>${esc(k)}</option>`).join('')}<option value="">Diğer</option></select>
@@ -657,18 +680,19 @@
     const uid = api.uid();
     const [rows, admin] = await Promise.all([
       api.get('shops', `owner_id=eq.${uid}&select=*`),
-      api.rpc('is_admin').catch(() => false),
+      api.rpc('is_admin').catch((e) => e),
     ]);
     const day = (S.my && S.my.day) || today();
     const isAdmin = admin === true;
-    if (!rows.length) { S.my = { shop: null, day, isAdmin }; return; }
+    const setupMissing = admin instanceof AppError && admin.code === 'SETUP_MISSING';
+    if (!rows.length) { S.my = { shop: null, day, isAdmin, setupMissing }; return; }
     const shop = rows[0];
     const [staff, services, contacts] = await Promise.all([
       api.get('staff', `shop_id=eq.${shop.id}&select=*&order=created_at`),
       api.get('services', `shop_id=eq.${shop.id}&select=*&order=price`),
       api.get('shop_contacts', `shop_id=eq.${shop.id}&select=*`).catch(() => []),
     ]);
-    S.my = { ...(S.my || {}), shop, staff, services, day, isAdmin, contact: contacts[0] || null };
+    S.my = { ...(S.my || {}), shop, staff, services, day, isAdmin, setupMissing, contact: contacts[0] || null };
   }
   async function loadToday() {
     const m = S.my;
@@ -700,12 +724,18 @@
 
   function barberShell(tab, body) {
     const t = (k, label, href) => `<a href="${href}" ${tab === k ? 'aria-current="page"' : ''}>${label}</a>`;
-    return `<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}${S.my && S.my.isAdmin ? t('yonetim', 'Yönetim', '#/berber/yonetim') : ''}</nav>${body}`;
+    return `${setupBanner()}<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}${S.my && S.my.isAdmin ? t('yonetim', 'Yönetim', '#/berber/yonetim') : ''}</nav>${body}`;
   }
 
   // ===================================================================
   // Berber: Randevular (gün görünümü)
   // ===================================================================
+  function setupBanner() {
+    if (!S.my || !S.my.setupMissing) return '';
+    return `<section class="card status bad" role="alert"><h2>Kurulum eksik</h2>
+      <p>Veritabanı eki (4. parça) henüz çalıştırılmamış. Bu yüzden dükkan onayı, yönetim ekranı ve saat kapatma çalışmıyor; yeni açılan dükkanlar onaysız yayına çıkıyor.</p>
+      <a class="btn" href="kurulum/" target="_blank" rel="noopener">Kurulum sayfasını aç</a></section>`;
+  }
   function shopState(m) {
     const s = m.shop;
     if (!s.is_active && !s.reviewed_at) return 'pending';

@@ -35,10 +35,13 @@ p { margin: 6px 0; }
   position: sticky; top: 0; z-index: 10; background: var(--ink);
   padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
 }
-.top::after { /* berber direği şeridi */
+.top::after { /* berber direği şeridi: yüklenirken döner */
   content: ""; position: absolute; left: 0; right: 0; bottom: -6px; height: 6px;
   background: repeating-linear-gradient(135deg, #B3202E 0 10px, #FFFFFF 10px 20px, #1F4E8C 20px 30px, #FFFFFF 30px 40px);
+  background-size: 56.5685px 56.5685px; transition: height .15s ease, bottom .15s ease;
 }
+.loading .top::after { height: 8px; bottom: -8px; animation: pole-top .6s linear infinite; }
+@keyframes pole-top { to { background-position: 56.5685px 0; } }
 .brand { color: var(--on-ink); background: none; font-weight: 800; letter-spacing: .06em; text-decoration: none; font-size: 18px; display: inline-block; min-height: 32px; line-height: 32px; }
 @media (prefers-color-scheme: dark) { .top { background: #05080D; } .brand { color: #EDF1F7; } }
 
@@ -165,6 +168,7 @@ details > summary { cursor: pointer; font-weight: 700; min-height: 44px; display
 #toast.bad { background: #B3202E; color: #fff; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .loading .top::after { opacity: .5; } }
 
 /* Durum kartı */
 .status { border-width: 2px; }
