@@ -165,3 +165,29 @@ details > summary { cursor: pointer; font-weight: 700; min-height: 44px; display
 #toast.bad { background: #B3202E; color: #fff; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Durum kartı */
+.status { border-width: 2px; }
+.status h2 { margin-top: 0; }
+.status.pending { border-color: var(--warn); }
+.status.bad { border-color: var(--red); }
+.status.ok { border-color: var(--ok); }
+
+/* Günün çizelgesi: saat × çalışan */
+.sched { overflow-x: auto; padding: 10px; -webkit-overflow-scrolling: touch; }
+.srow { display: grid; grid-template-columns: 48px repeat(var(--n), minmax(84px, 1fr)); gap: 6px; margin-bottom: 6px; min-width: calc(48px + var(--n) * 90px); }
+.srow.head { margin-bottom: 8px; }
+.shead { font-size: 14px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: end; }
+.stime { position: sticky; left: 0; z-index: 1; background: var(--card); font-weight: 800; font-variant-numeric: tabular-nums; font-size: 14px; display: flex; align-items: center; }
+.cell { min-height: 44px; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cell.free { border: 1.5px dashed var(--mut); background: var(--card); color: var(--mut); font-size: 20px; cursor: pointer; }
+.cell.free[aria-pressed="true"] { border-style: solid; border-color: var(--ink); background: var(--ink); color: var(--on-ink); }
+.cell.busy { border: 0; background: var(--blue); color: var(--card); cursor: pointer; display: block; line-height: 44px; text-align: center; }
+.cell.busy.done { background: var(--ok); }
+.cell.cont { background: color-mix(in srgb, var(--blue) 22%, var(--card)); color: var(--blue); }
+.cell.block, .cell.busy.block { background: repeating-linear-gradient(135deg, var(--line) 0 6px, var(--card) 6px 12px); color: var(--ink); border: 0; box-shadow: inset 0 0 0 1px var(--line); }
+.cell.past { color: var(--mut); background: var(--bg); opacity: .7; }
+.qpanel { position: sticky; left: 0; margin: 4px 0 10px; border: 2px solid var(--ink); }
+.qpanel h3 { margin-top: 0; }
+.qpanel h3:focus { outline: none; }
+.appt:focus { outline: 3px solid var(--blue); outline-offset: 4px; border-radius: 8px; }

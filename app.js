@@ -89,12 +89,14 @@
     RATE: 'Çok fazla deneme yapıldı. Birkaç dakika sonra tekrar dene.',
     AUTH: 'Oturumun sona erdi. Tekrar giriş yap.',
     NOT_AUTHENTICATED: 'Oturumun sona erdi. Tekrar giriş yap.',
+    NOT_ADMIN: 'Bu ekran sadece yönetici içindir.',
+    OWNER_NAME_INVALID: 'Adını ve soyadını yaz.',
     UPLOAD: 'Fotoğraf yüklenemedi. JPG veya PNG bir fotoğraf seç.',
     UNKNOWN: 'Bir şeyler ters gitti. Tekrar dene.',
   };
   const KNOWN = ['SLOT_TAKEN', 'HOLD_EXPIRED', 'NAME_INVALID', 'PHONE_INVALID', 'TOO_MANY', 'CANNOT_CANCEL', 'REVIEW_NOT_ALLOWED',
     'ALREADY_REVIEWED', 'REVIEW_INVALID', 'RATING_INVALID', 'DAY_INVALID', 'SHOP_NOT_FOUND', 'STAFF_NOT_IN_SHOP', 'SERVICE_NOT_FOR_STAFF',
-    'NOT_AUTHENTICATED'];
+    'NOT_AUTHENTICATED', 'NOT_ADMIN'];
   function codeOf(data, status) {
     const d = data && typeof data === 'object' ? data : {};
     const text = [d.message, d.msg, d.error_description, d.error, d.error_code, typeof data === 'string' ? data : ''].filter(Boolean).join(' ');
@@ -631,9 +633,14 @@
     <form data-form="onboard" class="card" novalidate>
       <label for="o-name">Dükkan adı</label><input id="o-name" name="name" required minlength="2" maxlength="80" placeholder="Örn. Makas &amp; Ustura">
       <label for="o-dist">Semt</label><select id="o-dist" name="district">${Object.keys(PLACES).map((k) => `<option>${esc(k)}</option>`).join('')}<option value="">Diğer</option></select>
-      <label for="o-phone">Dükkan telefonu (isteğe bağlı)</label><input id="o-phone" name="phone" type="tel" inputmode="tel" placeholder="0312 xxx xx xx ya da 05xx xxx xx xx">
+      <label for="o-phone">Dükkan telefonu (isteğe bağlı, müşteriler görür)</label><input id="o-phone" name="phone" type="tel" inputmode="tel" placeholder="0312 xxx xx xx ya da 05xx xxx xx xx">
+      <h2>Berber olduğunu doğrulayalım</h2>
+      <p class="mut">Yeni dükkanlar onaylandıktan sonra müşterilere görünür. Seni bu numaradan arayıp teyit ederiz. Bu bilgiler müşterilere gösterilmez.</p>
+      <label for="o-owner">Adın ve soyadın</label><input id="o-owner" name="owner_name" required minlength="2" maxlength="80" autocomplete="name">
+      <label for="o-mobile">Cep telefonun</label><input id="o-mobile" name="owner_phone" type="tel" inputmode="tel" required placeholder="05xx xxx xx xx" autocomplete="tel">
       <button class="btn">Dükkanı oluştur</button>
     </form>
+    ${S.my && S.my.isAdmin ? '<a class="btn sec" href="#/berber/yonetim">Yönetim ekranı</a>' : ''}
     <button class="lnk" data-act="logout" data-v="">Çıkış yap</button>`;
   }
   function passwordHtml() {
@@ -648,15 +655,20 @@
   async function loadMyShop(force) {
     if (S.my && S.my.shop && !force) return;
     const uid = api.uid();
-    const rows = await api.get('shops', `owner_id=eq.${uid}&select=*`);
+    const [rows, admin] = await Promise.all([
+      api.get('shops', `owner_id=eq.${uid}&select=*`),
+      api.rpc('is_admin').catch(() => false),
+    ]);
     const day = (S.my && S.my.day) || today();
-    if (!rows.length) { S.my = { shop: null, day }; return; }
+    const isAdmin = admin === true;
+    if (!rows.length) { S.my = { shop: null, day, isAdmin }; return; }
     const shop = rows[0];
-    const [staff, services] = await Promise.all([
+    const [staff, services, contacts] = await Promise.all([
       api.get('staff', `shop_id=eq.${shop.id}&select=*&order=created_at`),
       api.get('services', `shop_id=eq.${shop.id}&select=*&order=price`),
+      api.get('shop_contacts', `shop_id=eq.${shop.id}&select=*`).catch(() => []),
     ]);
-    S.my = { ...(S.my || {}), shop, staff, services, day };
+    S.my = { ...(S.my || {}), shop, staff, services, day, isAdmin, contact: contacts[0] || null };
   }
   async function loadToday() {
     const m = S.my;
@@ -673,12 +685,13 @@
     const m = S.my;
     const from = at(addDays(today(), -365), '00:00').toISOString();
     const [rows, notes] = await Promise.all([
-      api.get('appointments', `shop_id=eq.${m.shop.id}&starts_at=gte.${q(from)}&select=customer_name,customer_phone,status,price,starts_at&order=starts_at.desc&limit=5000`),
+      api.get('appointments', `shop_id=eq.${m.shop.id}&starts_at=gte.${q(from)}&kind=eq.appointment&select=customer_name,customer_phone,status,price,starts_at&order=starts_at.desc&limit=5000`),
       api.get('customer_notes', `shop_id=eq.${m.shop.id}&select=ckey,note`),
     ]);
     m.custRows = rows;
     m.notes = Object.fromEntries(notes.map((n) => [n.ckey, n.note]));
   }
+  async function loadAdmin() { S.adminRows = await api.rpc('admin_shops'); }
   async function loadSettings() {
     S.my.reviews = await api.get('reviews', `shop_id=eq.${S.my.shop.id}&select=*&order=created_at.desc&limit=100`);
   }
@@ -687,38 +700,117 @@
 
   function barberShell(tab, body) {
     const t = (k, label, href) => `<a href="${href}" ${tab === k ? 'aria-current="page"' : ''}>${label}</a>`;
-    return `<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}</nav>${body}`;
+    return `<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}${S.my && S.my.isAdmin ? t('yonetim', 'Yönetim', '#/berber/yonetim') : ''}</nav>${body}`;
   }
 
   // ===================================================================
   // Berber: Randevular (gün görünümü)
   // ===================================================================
-  function setupChecklist() {
+  function shopState(m) {
+    const s = m.shop;
+    if (!s.is_active && !s.reviewed_at) return 'pending';
+    if (!s.is_active) return 'rejected';
+    if (!m.staff.some((st) => st.active && m.services.some((v) => v.staff_id === st.id && v.active))) return 'incomplete';
+    if (!s.accepting) return 'closed';
+    return 'live';
+  }
+  function statusCard() {
     const m = S.my;
-    const hasStaff = m.staff.some((s) => s.active);
+    const st = shopState(m);
+    const hasStaff = m.staff.some((x) => x.active);
     const hasSvc = m.services.some((v) => v.active);
     const hasLoc = m.shop.lat != null;
     const hasPhoto = (m.shop.photos || []).length > 0;
-    if (hasStaff && hasSvc && hasLoc && hasPhoto) return '';
     const li = (ok, t) => `<li>${ok ? '<span class="okc" aria-hidden="true">✓</span>' : '<span aria-hidden="true">○</span>'} ${t}<span class="sr-only">${ok ? ', tamamlandı' : ', yapılmadı'}</span></li>`;
-    return `<section class="card"><h2 style="margin-top:0">Kurulumu tamamla</h2><ul class="plain checklist">
-      ${li(hasStaff, 'Personel ekle')}${li(hasSvc, 'Hizmet ve fiyat ekle')}${li(hasLoc, 'Dükkan konumunu kaydet')}${li(hasPhoto, 'Fotoğraf ekle')}</ul>
-      <a class="btn" href="#/berber/ayarlar">Ayarlara git</a></section>`;
+    const todo = (hasStaff && hasSvc && hasLoc && hasPhoto) ? '' : `<ul class="plain checklist">${li(hasStaff, 'Personel ekle')}${li(hasSvc, 'Personele hizmet ve fiyat ekle')}${li(hasLoc, 'Dükkan konumunu kaydet')}${li(hasPhoto, 'Fotoğraf ekle')}</ul>`;
+    const goBtn = S.route && S.route.tab === 'ayarlar' ? '' : '<a class="btn sec" href="#/berber/ayarlar">Ayarlara git</a>';
+    if (st === 'pending') {
+      return `<section class="card status pending" role="status"><h2>Dükkanın onay bekliyor</h2>
+        <p>${m.contact ? `Berber olduğunu teyit etmek için seni <b>${esc(fmtPhone(m.contact.owner_phone))}</b> numarasından arayacağız.` : '<b>Onay için Ayarlar\'da adını ve cep telefonunu gir.</b>'} Onaylanınca müşteriler dükkanını görür ve randevu alabilir.</p>
+        ${todo ? `<p class="mut">Bu sırada şunları tamamla:</p>${todo}${goBtn}` : ''}</section>`;
+    }
+    if (st === 'rejected') {
+      return `<section class="card status bad" role="status"><h2>Dükkanın onaylanmadı</h2>
+        ${m.shop.review_note ? `<p>Neden: ${esc(m.shop.review_note)}</p>` : ''}
+        <p>Bir yanlışlık olduğunu düşünüyorsan ${esc(CFG.contactEmail || '')} adresine yaz.</p></section>`;
+    }
+    if (st === 'incomplete') {
+      return `<section class="card status bad" role="status"><h2>Müşteriler dükkanını henüz göremiyor</h2>
+        <p>Görünmen için en az bir personel ve o personele bir hizmet eklemelisin.</p>${todo}${goBtn}</section>`;
+    }
+    if (st === 'closed') {
+      return `<section class="card status bad" role="status"><h2>Online randevu kapalı</h2><p>Müşteriler dükkanını görür ama randevu alamaz. Açmak için Randevular ekranındaki düğmeyi kullan.</p></section>`;
+    }
+    return `<section class="card status ok" role="status"><p class="okc" style="margin:0">Dükkanın müşterilere açık, randevu alınabiliyor.</p>${todo ? `<p class="mut">Daha çok müşteri için:</p>${todo}` : ''}</section>`;
+  }
+
+  // Günün çizelgesi: her saat ve her çalışan için ayrı kutu
+  const toMin = (t) => { const [a, b] = String(t).split(':').map(Number); return a * 60 + b; };
+  const minLabel = (x) => `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
+  function scheduleHtml() {
+    const m = S.my;
+    const s = m.shop;
+    const staff = m.staff.filter((st) => st.active);
+    if (!staff.length) return '';
+    const h = s.hours && s.hours[String(dowOf(m.day))];
+    if (!Array.isArray(h)) return `<h2>Günün çizelgesi</h2><p class="card mut">${esc(relDay(m.day))} dükkan kapalı. Çalışma saatlerini Ayarlar'dan değiştirebilirsin.</p>`;
+    const step = s.slot_minutes || 30;
+    const open = toMin(h[0]);
+    const close = toMin(h[1]);
+    const nowM = m.day === today() ? toMin(nowHM()) : (m.day < today() ? 24 * 60 : -1);
+    const live = (m.appts || []).filter((a) => dateOf(a.starts_at) === m.day && (a.status === 'confirmed' || a.status === 'completed'));
+    const pick = m.pick;
+    let rows = '';
+    for (let t = open; t < close; t += step) {
+      const label = minLabel(t);
+      const cells = staff.map((st) => {
+        const a = live.find((x) => x.staff_id === st.id && toMin(hm(x.starts_at)) < t + step && (toMin(hm(x.ends_at)) || 1440) > t);
+        if (a) {
+          const first = toMin(hm(a.starts_at)) >= t;
+          const block = a.kind === 'block';
+          const name = block ? 'Kapalı' : a.customer_name.split(' ')[0];
+          if (!first) return `<span class="cell cont${block ? ' block' : ''}" role="img" aria-label="${label} ${esc(st.name)}: dolu, ${esc(name)} devam ediyor"><span aria-hidden="true">↳</span></span>`;
+          return `<button class="cell busy${block ? ' block' : ''}${a.status === 'completed' ? ' done' : ''}" data-act="goto-appt" data-v="${a.id}" aria-label="${label} ${esc(st.name)}: ${esc(block ? 'kapalı' : a.customer_name)}">${esc(name)}</button>`;
+        }
+        if (t + step <= nowM) return `<span class="cell past" role="img" aria-label="${label} ${esc(st.name)}: geçti"><span aria-hidden="true">–</span></span>`;
+        const on = pick && pick.staff === st.id && pick.t === t;
+        return `<button class="cell free" aria-pressed="${!!on}" data-act="slot-pick" data-v="${st.id}|${t}" aria-label="${label} ${esc(st.name)}: boş">+</button>`;
+      }).join('');
+      rows += `<div class="srow" style="--n:${staff.length}"><span class="stime">${label}</span>${cells}</div>`;
+      if (pick && pick.t === t) rows += quickHtml(staff.find((x) => x.id === pick.staff), t);
+    }
+    return `<h2 id="h-sched">Günün çizelgesi</h2>
+      <p class="hint">Boş kutuya (+) dokun: o saat ve o çalışan için randevu ekle ya da saati kapat. Dolu kutuya dokununca randevunun ayrıntısı açılır.</p>
+      <div class="sched card"><div class="srow head" style="--n:${staff.length}"><span></span>${staff.map((st) => `<b class="shead">${esc(st.name)}</b>`).join('')}</div>${rows}</div>`;
+  }
+  function quickHtml(st, t) {
+    if (!st) return '';
+    const m = S.my;
+    const sv = m.services.filter((v) => v.staff_id === st.id && v.active);
+    return `<form data-form="quick" class="card qpanel" novalidate aria-labelledby="q-h">
+      <h3 id="q-h" tabindex="-1">${esc(relDay(m.day))} ${minLabel(t)}, ${esc(st.name)}</h3>
+      <input type="hidden" name="staff" value="${st.id}"><input type="hidden" name="t" value="${t}">
+      ${sv.length ? `<label for="q-svc">Hizmet</label><select id="q-svc" name="svc">${sv.map((v) => `<option value="${v.id}">${esc(v.name)} (${v.duration} dk, ${TL(v.price)})</option>`).join('')}</select>
+      <label for="q-name">Müşteri adı (isteğe bağlı)</label><input id="q-name" name="name" maxlength="60" autocomplete="off">
+      <label for="q-phone">Telefon (isteğe bağlı)</label><input id="q-phone" name="phone" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off">` : `<p class="mut">${esc(st.name)} için hizmet yok. Randevu eklemek için Ayarlar'dan hizmet ekle.</p>`}
+      <div class="acts">${sv.length ? '<button class="sm pri" name="mode" value="appt">Randevu ekle</button>' : ''}
+        <button class="sm" name="mode" value="block">Saati kapat</button>
+        <button type="button" class="sm" data-act="pick-cancel" data-v="">Vazgeç</button></div>
+      <p class="hint">Eklenen ya da kapatılan saati müşteriler online alamaz.</p></form>`;
   }
   function todayHtml() {
     const m = S.my;
     const s = m.shop;
     const dayAppts = (m.appts || []).filter((a) => dateOf(a.starts_at) === m.day);
-    const live = dayAppts.filter((a) => a.status === 'confirmed' || a.status === 'completed');
+    const live = dayAppts.filter((a) => a.kind !== 'block' && (a.status === 'confirmed' || a.status === 'completed'));
     const sum = (arr) => arr.reduce((x, a) => x + (a.price || 0), 0);
     const opts = m.staff.filter((st) => st.active).flatMap((st) => m.services.filter((v) => v.staff_id === st.id && v.active)
       .map((v) => `<option value="${st.id}|${v.id}">${esc(st.name)}: ${esc(v.name)} (${v.duration} dk, ${TL(v.price)})</option>`)).join('');
-    const nextQ = (() => { const [hh, mm] = nowHM().split(':').map(Number); const t = Math.ceil((hh * 60 + mm) / 15) * 15; return `${String(Math.floor(t / 60) % 24).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; })();
     const waiting = (m.waitlist || []).filter((w) => w.status === 'waiting');
     const freed = dayAppts.some((a) => a.status === 'cancelled') && waiting.length;
     return `<div class="row" style="margin-top:8px"><h1 style="margin:0">${esc(s.name)}</h1>
       <button class="switch" role="switch" aria-checked="${s.accepting}" data-act="accepting" data-v="">Online randevu ${s.accepting ? 'açık' : 'kapalı'}</button></div>
-    ${setupChecklist()}
+    ${['live', 'closed'].includes(shopState(m)) ? '' : statusCard()}
     <div class="daynav"><button class="sm" data-act="day" data-v="-1" aria-label="Önceki gün">‹</button>
       <b>${esc(relDay(m.day))}${m.day !== today() && m.day !== addDays(today(), 1) ? '' : `<br><span class="mut">${esc(dLabel(m.day, { day: 'numeric', month: 'long' }))}</span>`}</b>
       <button class="sm" data-act="day" data-v="1" aria-label="Sonraki gün">›</button></div>
@@ -730,27 +822,31 @@
     </div>
     <p class="hint">Son güncelleme ${esc(hm(new Date(m.loadedAt || Date.now()).toISOString()))}. <button class="lnk" data-act="refresh" data-v="">Yenile</button></p>
     ${freed ? `<p class="card hot">İptal olan saat var ve bekleme listesinde ${waiting.length} kişi bekliyor. Aşağıdan WhatsApp ile haber ver.</p>` : ''}
+    ${scheduleHtml()}
     <h2>Randevular</h2>
     <section class="card">${dayAppts.length ? `<ul class="plain">${dayAppts.map(apptHtml).join('')}</ul>` : '<p class="mut">Bu gün için randevu yok.</p>'}</section>
-    <details class="card" id="add-box" ${!opts || m.addOpen ? 'open' : ''}><summary>Randevu ya da kapıdan gelen ekle</summary>
-      ${opts ? `<form data-form="add-appt" novalidate>
+    ${m.day === today() && opts ? `<details class="card" id="add-box" ${m.addOpen ? 'open' : ''}><summary>Kapıdan gelen müşteriyi sıraya ekle</summary>
+      <form data-form="add-appt" novalidate>
         <label for="m-name">Müşteri adı</label><input id="m-name" name="name" required minlength="1" maxlength="60" autocomplete="off">
         <label for="m-phone">Telefon (isteğe bağlı)</label><input id="m-phone" name="phone" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off">
         <label for="m-svc">Personel ve hizmet</label><select id="m-svc" name="svc">${opts}</select>
-        <label for="m-time">Randevu saati (${esc(relDay(m.day))})</label><input id="m-time" name="time" type="time" value="${nextQ}">
-        <button class="btn" name="mode" value="appt">Randevu ekle</button>
-        ${m.day === today() ? '<button class="btn sec" name="mode" value="queue">Sıraya ekle (kapıdan gelen)</button>' : ''}
-      </form>` : '<p class="mut">Önce Ayarlar\'dan personel ve hizmet ekle.</p>'}
-    </details>
+        <button class="btn" name="mode" value="queue">Sıraya ekle</button>
+      </form></details>` : ''}
     ${m.day === today() && m.walkins.length ? queueHtml() : ''}
     ${(m.waitlist || []).length ? waitlistHtml() : ''}
     ${commissionHtml()}`;
   }
   function apptHtml(a) {
     const m = S.my;
+    if (a.kind === 'block') {
+      return `<li class="appt" id="appt-${a.id}" tabindex="-1"><div class="row"><span class="time">${esc(hm(a.starts_at))}–${esc(hm(a.ends_at))}</span><span class="badge">Kapalı</span></div>
+        <p class="mut">${esc(staffName(a.staff_id))} bu saatte müşteri almıyor.</p>
+        <div class="acts"><button class="sm" data-act="unblock" data-v="${a.id}">Saati aç</button></div></li>`;
+    }
     const msg = `Merhaba ${a.customer_name.split(' ')[0]}, ${relDay(dateOf(a.starts_at)).toLocaleLowerCase('tr')} saat ${hm(a.starts_at)} ${m.shop.name} randevunu hatırlatırız. Gelemeyeceksen lütfen haber ver.`;
     const src = a.source === 'web' ? 'online' : a.source === 'walkin' ? 'kapıdan' : 'elle';
-    return `<li class="appt"><div class="row"><span class="time">${esc(hm(a.starts_at))}–${esc(hm(a.ends_at))}</span><span class="badge st-${a.status}">${STATUS[a.status]}</span></div>
+    const mins = Math.round((new Date(a.ends_at) - new Date(a.starts_at)) / 60000);
+    return `<li class="appt" id="appt-${a.id}" tabindex="-1"><div class="row"><span class="time">${esc(hm(a.starts_at))}–${esc(hm(a.ends_at))}</span><span class="badge st-${a.status}">${STATUS[a.status]}</span></div>
       <p><b>${esc(a.customer_name)}</b> <span class="mut">(${src})</span></p>
       <p class="mut">${esc(a.service_name)}, ${esc(staffName(a.staff_id))}, ${TL(a.price)}${a.surge ? ' (yoğun gün farkı dahil)' : ''}${a.customer_phone ? `, ${esc(fmtPhone(a.customer_phone))}` : ''}</p>
       <div class="acts">
@@ -759,6 +855,7 @@
           <button class="sm" data-act="st" data-v="${a.id}" data-k="cancelled" data-two="1">İptal et</button>` : ''}
         ${a.customer_phone ? `<a class="sm" href="tel:0${esc(a.customer_phone)}">Ara</a>` : ''}
         ${a.customer_phone && a.status === 'confirmed' ? `<a class="sm" href="${esc(waLink(a.customer_phone, msg))}" target="_blank" rel="noopener">WhatsApp ile hatırlat</a>` : ''}
+        ${a.status === 'confirmed' ? `<a class="sm" href="${esc(gcal(`${a.customer_name}: ${a.service_name} (${staffName(a.staff_id)})`, a.starts_at, mins, m.shop.name))}" target="_blank" rel="noopener">Takvime ekle</a>` : ''}
       </div></li>`;
   }
   function queueHtml() {
@@ -787,7 +884,7 @@
   function commissionHtml() {
     const m = S.my;
     if (!m.staff.length) return '';
-    const done = (m.appts || []).filter((a) => a.status === 'completed');
+    const done = (m.appts || []).filter((a) => a.status === 'completed' && a.kind !== 'block');
     const rows = m.staff.map((st) => {
       const day = done.filter((a) => a.staff_id === st.id && dateOf(a.starts_at) === m.day).reduce((x, a) => x + a.price, 0);
       const week = done.filter((a) => a.staff_id === st.id).reduce((x, a) => x + a.price, 0);
@@ -806,6 +903,7 @@
     const m = S.my;
     const map = new Map();
     for (const a of m.custRows || []) {
+      if (!a.customer_phone && a.customer_name === 'Dükkan müşterisi') continue;
       const k = ckey(a.customer_name, a.customer_phone);
       let c = map.get(k);
       if (!c) { c = { k, name: a.customer_name, phone: a.customer_phone, visits: 0, spent: 0, last: null, noshow: 0, cancel: 0, upcoming: 0 }; map.set(k, c); }
@@ -882,12 +980,20 @@
       <form data-form="reply" novalidate><input type="hidden" name="id" value="${r.id}"><label for="rp-${r.id}">Yanıtın</label>
       <input id="rp-${r.id}" name="reply" maxlength="500" value="${esc(r.reply || '')}"><button class="sm" style="margin-top:8px">${r.reply ? 'Yanıtı güncelle' : 'Yanıtla'}</button></form></li>`).join('');
     return `<h1>Ayarlar</h1>
+    ${statusCard()}
     <section class="card" id="s-link"><h2 style="margin-top:0">Müşteri linkin ve QR kodun</h2>
       <p>Müşterilerin bu linkten ya da QR koddan randevu alır. Instagram biyografine, WhatsApp durumuna ve vitrine koy.</p>
       <p class="linkbox" id="shop-link">${esc(link)}</p><div id="qr-box"></div>
       <div class="acts"><button class="sm pri" data-act="copy-link" data-v="">Linki kopyala</button>
       <a class="sm" href="${esc(waLink('', `${s.name} için online randevu: ${link}`))}" target="_blank" rel="noopener">WhatsApp'ta paylaş</a></div>
       <p class="hint">İpucu: Müşterine dükkanını uygulamada "Favori" yapmasını söyle; favori dükkanlar listesinin en başında görünür.</p></section>
+
+    <section class="card" id="s-contact"><h2 style="margin-top:0">Doğrulama bilgilerin</h2>
+      <p class="mut">Sadece onay için kullanılır, müşterilere gösterilmez.</p>
+      <form data-form="contact" novalidate>
+        <label for="c-owner">Adın ve soyadın</label><input id="c-owner" name="owner_name" required minlength="2" maxlength="80" value="${esc(m.contact ? m.contact.owner_name : '')}" autocomplete="name">
+        <label for="c-mobile">Cep telefonun</label><input id="c-mobile" name="owner_phone" type="tel" inputmode="tel" required value="${esc(m.contact ? fmtPhone(m.contact.owner_phone) : '')}" placeholder="05xx xxx xx xx" autocomplete="tel">
+        <button class="btn sec">Kaydet</button></form></section>
 
     <section class="card" id="s-profile"><h2 style="margin-top:0">Dükkan bilgileri</h2><form data-form="profile" novalidate>
       <label for="p-name">Dükkan adı</label><input id="p-name" name="name" required minlength="2" maxlength="80" value="${esc(s.name)}">
@@ -936,6 +1042,35 @@
   }
 
   // ===================================================================
+  // Yönetim (platform sahibi): dükkan onayı
+  // ===================================================================
+  function adminHtml() {
+    const rows = S.adminRows || [];
+    const pend = rows.filter((r) => r.pending);
+    const act = rows.filter((r) => r.is_active);
+    const rej = rows.filter((r) => !r.is_active && !r.pending);
+    const card = (r) => {
+      const text = `Merhaba ${(r.owner_name || '').split(' ')[0]}, ${APP} uygulamasına ${r.name} adıyla dükkan başvurusu yaptın. Berber olduğunu teyit etmek için yazıyoruz.`;
+      return `<li class="card"><div class="row"><h3>${esc(r.name)}</h3><span class="badge ${r.is_active ? 'st-completed' : r.pending ? 'st-confirmed' : 'st-cancelled'}">${r.is_active ? 'Yayında' : r.pending ? 'Onay bekliyor' : 'Reddedildi'}</span></div>
+        <p class="mut">${esc([r.address, r.district].filter(Boolean).join(', ') || 'Adres girilmedi')}, başvuru ${esc(dLabel(dateOf(r.created_at), { day: 'numeric', month: 'long' }))}</p>
+        <p><b>${esc(r.owner_name || 'Ad girilmedi')}</b>${r.owner_phone ? `, ${esc(fmtPhone(r.owner_phone))}` : ', <span class="hot">telefon girilmedi</span>'}${r.email ? `<br><span class="mut">${esc(r.email)}</span>` : ''}</p>
+        <p class="mut">${r.staff_count} personel, ${r.service_count} hizmet, ${r.appt_count} randevu${r.review_note ? `. Not: ${esc(r.review_note)}` : ''}</p>
+        <div class="acts">
+          ${r.owner_phone ? `<a class="sm" href="tel:0${esc(r.owner_phone)}">Ara</a><a class="sm" href="${esc(waLink(r.owner_phone, text))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+          ${r.is_active ? '' : `<button class="sm pri" data-act="admin-ok" data-v="${r.id}">Onayla</button>`}
+        </div>
+        ${r.is_active || r.pending ? `<form data-form="admin-no" class="svc-row" novalidate><input type="hidden" name="id" value="${r.id}">
+          <label for="an-${r.id}">${r.is_active ? 'Yayından kaldırma nedeni' : 'Reddetme nedeni'} (berber görür)</label><input id="an-${r.id}" name="note" maxlength="200">
+          <button class="sm" style="margin-top:8px">${r.is_active ? 'Yayından kaldır' : 'Reddet'}</button></form>` : ''}</li>`;
+    };
+    return `<h1>Yönetim</h1>
+      <p class="mut">Yeni dükkanlar sen onaylayana kadar müşterilere görünmez. Onaylamadan önce berberi arayıp teyit et.</p>
+      <h2>Onay bekleyenler (${pend.length})</h2><ul class="plain">${pend.map(card).join('') || '<li class="card mut">Bekleyen başvuru yok.</li>'}</ul>
+      <h2>Yayında (${act.length})</h2><ul class="plain">${act.map(card).join('') || '<li class="card mut">Henüz yok.</li>'}</ul>
+      ${rej.length ? `<h2>Reddedilenler (${rej.length})</h2><ul class="plain">${rej.map(card).join('')}</ul>` : ''}`;
+  }
+
+  // ===================================================================
   // Görünüm tablosu
   // ===================================================================
   const VIEWS = {
@@ -961,6 +1096,11 @@
       if (r.tab === 'sifre') return api.session ? passwordHtml() : authHtml();
       if (!api.session) return authHtml();
       await loadMyShop(force);
+      if (r.tab === 'yonetim') {
+        if (!S.my.isAdmin) throw new AppError('NOT_ADMIN');
+        await loadAdmin();
+        return S.my.shop ? barberShell('yonetim', adminHtml()) : adminHtml();
+      }
       if (!S.my.shop) return onboardHtml();
       if (r.tab === 'musteriler') { await loadCustomers(); return barberShell('musteriler', customersHtml()); }
       if (r.tab === 'ayarlar') { await loadSettings(); return barberShell('ayarlar', settingsHtml()); }
@@ -976,6 +1116,7 @@
     barber: (r) => {
       if (r.tab === 'sifre') return passwordHtml();
       if (!api.session) return authHtml();
+      if (r.tab === 'yonetim' && S.my && S.my.isAdmin) return S.my.shop ? barberShell('yonetim', adminHtml()) : adminHtml();
       if (!S.my || !S.my.shop) return onboardHtml();
       if (r.tab === 'musteriler') return barberShell('musteriler', customersHtml());
       if (r.tab === 'ayarlar') return barberShell('ayarlar', settingsHtml());
@@ -1071,6 +1212,17 @@
       }
     }),
     'new-bk': () => { S.bk.slug = null; render({ force: true }); },
+    'slot-pick': (btn) => {
+      const [staff, t] = btn.dataset.v.split('|');
+      S.my.pick = { staff, t: Number(t) };
+      redraw();
+      const h = $('#q-h');
+      if (h) { h.focus({ preventScroll: true }); h.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    },
+    'pick-cancel': () => { const t = S.my.pick; S.my.pick = null; redraw(); const b = t && $(`[data-act="slot-pick"][data-v="${t.staff}|${t.t}"]`); if (b) b.focus(); },
+    'goto-appt': (btn) => { const el = $(`#appt-${btn.dataset.v}`); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus({ preventScroll: true }); } },
+    unblock: (btn) => busy(btn, async () => { await api.del('appointments', `id=eq.${btn.dataset.v}`); await refreshMy('day'); toast('Saat açıldı, müşteriler yeniden alabilir.'); }),
+    'admin-ok': (btn) => busy(btn, async () => { await api.rpc('admin_review_shop', { p_shop: btn.dataset.v, p_approve: true, p_note: null }); await loadAdmin(); S.disc = null; redraw(); toast('Dükkan onaylandı, artık müşterilere görünüyor.'); }),
     release: () => { releaseHold(); redraw(); const h = $('#h-slot'); if (h) h.scrollIntoView({ block: 'start' }); },
     'cancel-bk': (btn) => { if (!twoStep(btn)) return; busy(btn, async () => { await api.rpc('cancel_booking', { p_token: btn.dataset.v }); S.disc = null; await loadMine(); redraw(); toast('Randevun iptal edildi.'); }); },
     'auth-tab': (el, ev) => { ev.preventDefault(); S.authTab = el.dataset.v; redraw(); const f = $('#a-email') || $('#r-email'); if (f) f.focus(); },
@@ -1083,7 +1235,7 @@
       toast(on ? 'Online randevu açıldı.' : 'Online randevu kapatıldı. Müşteriler yeni randevu alamaz.');
       redraw();
     }),
-    day: (btn) => busy(btn, async () => { const v = Number(btn.dataset.v); S.my.day = v === 0 ? today() : addDays(S.my.day, v); await loadToday(); redraw(); }),
+    day: (btn) => busy(btn, async () => { const v = Number(btn.dataset.v); S.my.day = v === 0 ? today() : addDays(S.my.day, v); S.my.pick = null; await loadToday(); redraw(); }),
     st: (btn) => {
       if (btn.dataset.two && !twoStep(btn)) return;
       busy(btn, async () => {
@@ -1210,46 +1362,83 @@
     async onboard(d) {
       const name = String(d.name || '').trim();
       if (name.length < 2) throw new AppError('NAME_INVALID');
+      const owner = String(d.owner_name || '').trim();
+      if (owner.length < 2) throw new AppError('OWNER_NAME_INVALID');
+      const mobile = normPhone(d.owner_phone);
+      if (!mobile) throw new AppError('PHONE_INVALID');
       const phone = d.phone ? normAnyPhone(d.phone) : '';
       if (d.phone && !phone) throw new AppError('SHOP_PHONE_INVALID');
       const c = PLACES[d.district];
       const row = { owner_id: api.uid(), name, slug: `${slugify(name)}-${rand4()}`, district: d.district || '', phone, lat: c ? c[0] : null, lng: c ? c[1] : null };
-      try { await api.insert('shops', [row]); } catch (e) {
+      let created;
+      try { [created] = await api.insert('shops', [row]); } catch (e) {
         if (e.code !== 'DUPLICATE') throw e;
         row.slug = `${slugify(name)}-${rand4()}`;
-        try { await api.insert('shops', [row]); } catch (e2) { if (e2.code !== 'DUPLICATE') throw e2; }
+        try { [created] = await api.insert('shops', [row]); } catch (e2) { if (e2.code !== 'DUPLICATE') throw e2; }
       }
+      if (!created) { await loadMyShop(true); created = S.my.shop; }
+      if (created) await api.upsert('shop_contacts', [{ shop_id: created.id, owner_name: owner, owner_phone: mobile }], 'shop_id').catch(fail);
       S.disc = null;
       await loadMyShop(true);
-      toast('Dükkanın oluşturuldu. Şimdi personel ve hizmet ekle.');
       go('#/berber/ayarlar');
+      toast('Dükkanın oluşturuldu ve onaya gönderildi. Bu sırada personel ve hizmetlerini ekle.');
     },
-    async 'add-appt'(d, form, submitter) {
+    async contact(d) {
+      const owner = String(d.owner_name || '').trim();
+      if (owner.length < 2) throw new AppError('OWNER_NAME_INVALID');
+      const mobile = normPhone(d.owner_phone);
+      if (!mobile) throw new AppError('PHONE_INVALID');
+      await api.upsert('shop_contacts', [{ shop_id: S.my.shop.id, owner_name: owner, owner_phone: mobile, updated_at: new Date().toISOString() }], 'shop_id');
+      await refreshMy();
+      toast('Doğrulama bilgilerin kaydedildi.');
+    },
+    async quick(d, form, submitter) {
+      const m = S.my;
+      const t = Number(d.t);
+      const startsAt = at(m.day, minLabel(t));
+      const who = staffName(d.staff);
+      if (submitter && submitter.value === 'block') {
+        try {
+          await api.insert('appointments', [{ shop_id: m.shop.id, staff_id: d.staff, service_name: 'Kapalı', customer_name: 'Kapalı', starts_at: startsAt.toISOString(), ends_at: new Date(startsAt.getTime() + (m.shop.slot_minutes || 30) * 60000).toISOString(), status: 'confirmed', source: 'barber', kind: 'block', price: 0, base_price: 0 }]);
+        } catch (e) { if (e.code === 'SLOT_TAKEN') { toast(`${who} bu saatte dolu.`, true); return; } throw e; }
+        m.pick = null;
+        await refreshMy('day');
+        toast(`${minLabel(t)} ${who} için kapatıldı. Müşteriler bu saati alamaz.`);
+        return;
+      }
+      const sv = svcOf(d.svc);
+      if (!sv) { toast('Hizmet seç.', true); return; }
+      const phone = d.phone ? normPhone(d.phone) : '';
+      if (d.phone && !phone) throw new AppError('PHONE_INVALID');
+      const name = String(d.name || '').trim() || 'Dükkan müşterisi';
+      try {
+        await api.insert('appointments', [{ shop_id: m.shop.id, staff_id: d.staff, service_id: sv.id, service_name: sv.name, customer_name: name, customer_phone: phone || '', starts_at: startsAt.toISOString(), ends_at: new Date(startsAt.getTime() + sv.duration * 60000).toISOString(), base_price: sv.price, price: sv.price, status: 'confirmed', source: 'barber' }]);
+      } catch (e) {
+        if (e.code === 'SLOT_TAKEN') { toast(`${who} için ${sv.duration} dakikalık süre sonraki randevuyla çakışıyor. Başka saat seç.`, true); return; }
+        throw e;
+      }
+      m.pick = null;
+      await refreshMy('day');
+      toast(`${minLabel(t)} ${who}: ${name} eklendi. Müşteriler bu saati alamaz.`);
+    },
+    async 'admin-no'(d) {
+      await api.rpc('admin_review_shop', { p_shop: d.id, p_approve: false, p_note: String(d.note || '').trim() || null });
+      await loadAdmin();
+      S.disc = null;
+      redraw();
+      toast('Dükkan müşterilere kapatıldı.');
+    },
+    async 'add-appt'(d, form) {
       const m = S.my;
       const [staffId, svcId] = String(d.svc || '').split('|');
-      const sv = svcOf(svcId);
       const name = String(d.name || '').trim();
       if (!name) throw new AppError('NAME_INVALID');
       const phone = d.phone ? normPhone(d.phone) : '';
       if (d.phone && !phone) throw new AppError('PHONE_INVALID');
-      let done;
-      if (submitter && submitter.value === 'queue') {
-        await api.insert('walkins', [{ shop_id: m.shop.id, staff_id: staffId, service_id: svcId, name, phone: phone || '' }]);
-        done = `${name} sıraya eklendi.`;
-      } else {
-        if (!/^\d\d:\d\d$/.test(d.time || '')) { toast('Randevu saatini seç.', true); return; }
-        const st = at(m.day, d.time);
-        try {
-          await api.insert('appointments', [{ shop_id: m.shop.id, staff_id: staffId, service_id: svcId, service_name: sv.name, customer_name: name, customer_phone: phone || '', starts_at: st.toISOString(), ends_at: new Date(st.getTime() + sv.duration * 60000).toISOString(), base_price: sv.price, price: sv.price, status: 'confirmed', source: 'barber' }]);
-        } catch (e) {
-          if (e.code === 'SLOT_TAKEN') { toast(`${staffName(staffId)} bu saatte dolu. Başka saat seç.`, true); return; }
-          throw e;
-        }
-        done = 'Randevu eklendi.';
-      }
+      await api.insert('walkins', [{ shop_id: m.shop.id, staff_id: staffId, service_id: svcId, name, phone: phone || '' }]);
       form.reset();
       await refreshMy('day');
-      toast(done);
+      toast(`${name} sıraya eklendi.`);
     },
     async note(d) {
       await api.upsert('customer_notes', [{ shop_id: S.my.shop.id, ckey: d.k, note: String(d.note || '').trim(), updated_at: new Date().toISOString() }], 'shop_id,ckey');

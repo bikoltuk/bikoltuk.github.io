@@ -1,0 +1,80 @@
+create table if not exists public.admins (
+user_id uuid primary key references auth.users(id) on delete cascade
+);
+alter table public.admins enable row level security;
+revoke all on public.admins from anon, authenticated;
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+select exists (select 1 from admins where user_id = auth.uid())
+$$;
+alter table public.shops add column if not exists reviewed_at timestamptz;
+alter table public.shops add column if not exists review_note text;
+alter table public.shops alter column is_active set default false;
+create or replace function public.shops_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+if not public.is_admin() then
+new.is_active := false;
+new.reviewed_at := null;
+new.review_note := null;
+end if;
+return new;
+end $$;
+drop trigger if exists shops_guard on public.shops;
+create trigger shops_guard before insert on public.shops for each row execute function public.shops_guard();
+create table if not exists public.shop_contacts (
+shop_id     uuid primary key references public.shops(id) on delete cascade,
+owner_name  text not null check (char_length(owner_name) between 2 and 80),
+owner_phone text not null check (owner_phone ~ '^5[0-9]{9}$'),
+updated_at  timestamptz not null default now()
+);
+alter table public.shop_contacts enable row level security;
+revoke all on public.shop_contacts from anon;
+drop policy if exists contacts_owner on public.shop_contacts;
+create policy contacts_owner on public.shop_contacts for all to authenticated
+using (public.is_my_shop(shop_id)) with check (public.is_my_shop(shop_id));
+alter table public.appointments add column if not exists kind text not null default 'appointment';
+do $$
+begin
+if not exists (select 1 from pg_constraint where conname = 'appointments_kind_check') then
+alter table public.appointments add constraint appointments_kind_check check (kind in ('appointment', 'block'));
+end if;
+end $$;
+create or replace function public.admin_shops() returns json
+language plpgsql stable security definer set search_path = public as $$
+begin
+if not public.is_admin() then raise exception 'NOT_ADMIN'; end if;
+return coalesce((
+select json_agg(x order by x.pending desc, x.created_at desc) from (
+select s.id, s.name, s.slug, s.district, s.address, s.phone, s.is_active, s.reviewed_at, s.review_note, s.created_at,
+(s.reviewed_at is null and not s.is_active) as pending,
+c.owner_name, c.owner_phone, u.email,
+(select count(*) from staff st where st.shop_id = s.id and st.active)::int as staff_count,
+(select count(*) from services sv where sv.shop_id = s.id and sv.active)::int as service_count,
+(select count(*) from appointments a where a.shop_id = s.id and a.kind = 'appointment')::int as appt_count
+from shops s
+left join shop_contacts c on c.shop_id = s.id
+left join auth.users u on u.id = s.owner_id
+) x), '[]'::json);
+end $$;
+create or replace function public.admin_review_shop(p_shop uuid, p_approve boolean, p_note text default null) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+if not public.is_admin() then raise exception 'NOT_ADMIN'; end if;
+update shops set is_active = p_approve, reviewed_at = now(), review_note = nullif(btrim(coalesce(p_note, '')), '')
+where id = p_shop;
+if not found then raise exception 'SHOP_NOT_FOUND'; end if;
+end $$;
+revoke execute on function public.shops_guard() from public, anon, authenticated;
+revoke execute on function public.admin_shops() from public, anon;
+revoke execute on function public.admin_review_shop(uuid, boolean, text) from public, anon;
+grant execute on function public.admin_shops(), public.admin_review_shop(uuid, boolean, text) to authenticated;
+grant execute on function public.is_admin() to anon, authenticated;
+insert into public.admins (user_id)
+select id from auth.users where lower(email) = 'alperen.gs.ceylan@gmail.com'
+on conflict do nothing;
+notify pgrst, 'reload schema';
+select case when exists (select 1 from public.admins)
+then 'Bölüm 4 tamam: yönetici hesabı tanımlandı'
+else 'Bölüm 4 tamam, AMA yönetici bulunamadı: önce alperen.gs.ceylan@gmail.com ile berber olarak kayıt ol, sonra bu parçayı tekrar çalıştır'
+end as sonuc;
