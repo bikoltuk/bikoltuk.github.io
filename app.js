@@ -123,7 +123,7 @@
   // ===================================================================
   // Üstteki berber direği şeridi, sunucuyla konuşulurken döner
   const loader = {
-    n: 0, timer: 0, shownAt: 0,
+    n: 0, timer: 0, shownAt: 0, boot: true, // açılışta şerit sayfa ilk çizildiği andan itibaren döner (index.html)
     start() {
       if (this.n++ > 0) return;
       clearTimeout(this.timer);
@@ -133,9 +133,15 @@
     stop() {
       if (--this.n > 0) return;
       this.n = 0;
+      if (this.boot) return;
       clearTimeout(this.timer);
       if (!document.documentElement.classList.contains('loading')) return;
       this.timer = setTimeout(() => { if (!this.n) document.documentElement.classList.remove('loading'); }, Math.max(0, 700 - (Date.now() - this.shownAt)));
+    },
+    booted() {
+      this.boot = false;
+      $('#main').removeAttribute('aria-busy');
+      if (!this.n) document.documentElement.classList.remove('loading');
     },
   };
   const api = {
@@ -1647,9 +1653,9 @@
     if (brand) brand.textContent = APP;
     const sp = new URLSearchParams(location.search).get('s');
     if (sp && !location.hash) history.replaceState(null, '', `${siteUrl()}#/b/${encodeURIComponent(sp)}`);
-    await authFromHash();
+    try { await authFromHash(); } catch { /* bağlantı yoksa aşağıdaki görünüm hatayı gösterir */ }
     window.addEventListener('hashchange', () => render());
-    render();
+    try { await render(); } finally { loader.booted(); }
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   boot();
