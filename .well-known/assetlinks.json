@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "io.github.bikoltuk.twa",
+      "sha256_cert_fingerprints": [
+        "D0:91:07:A2:59:C8:C2:CA:E8:CD:C0:3F:4E:44:DD:F9:3A:53:EB:21:A1:D8:42:37:C0:92:61:4D:8A:2A:CD:45"
+      ]
+    }
+  }
+]
