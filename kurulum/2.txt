@@ -1,0 +1,227 @@
+create or replace function public.is_my_shop(p_shop uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+select exists (select 1 from shops where id = p_shop and owner_id = auth.uid())
+$$;
+create or replace function public.norm_phone(p text) returns text
+language sql immutable as $$
+select case when d ~ '^5\d{9}$' then d end
+from (select right(regexp_replace(coalesce(p, ''), '\D', '', 'g'), 10) as d) x
+$$;
+create or replace function public.services_fill_shop() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+select shop_id into new.shop_id from staff where id = new.staff_id;
+if new.shop_id is null then raise exception 'STAFF_NOT_FOUND'; end if;
+return new;
+end $$;
+drop trigger if exists services_fill_shop on public.services;
+create trigger services_fill_shop before insert or update on public.services
+for each row execute function public.services_fill_shop();
+create or replace function public.appointments_check() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+if not exists (select 1 from staff where id = new.staff_id and shop_id = new.shop_id) then
+raise exception 'STAFF_NOT_IN_SHOP';
+end if;
+if new.service_id is not null and not exists (select 1 from services where id = new.service_id and staff_id = new.staff_id) then
+raise exception 'SERVICE_NOT_FOR_STAFF';
+end if;
+return new;
+end $$;
+drop trigger if exists appointments_check on public.appointments;
+create trigger appointments_check before insert or update of shop_id, staff_id, service_id on public.appointments
+for each row execute function public.appointments_check();
+create or replace function public.quote_price(p_shop public.shops, p_base int, p_day date, out q_price int, out q_surge boolean)
+language sql stable security definer set search_path = public as $$
+select case when z.s then round(p_base * (100 + p_shop.surge_percent) / 100.0)::int else p_base end, z.s
+from (select p_shop.auto_pricing and (
+select count(*) from appointments a
+where a.shop_id = p_shop.id and a.status in ('confirmed','completed')
+and (a.starts_at at time zone 'Europe/Istanbul')::date = p_day
+) > p_shop.surge_threshold as s) z
+$$;
+create or replace function public.get_slots(p_shop uuid, p_staff uuid, p_service uuid, p_day date)
+returns table (slot_at timestamptz, slot_label text, slot_price int, slot_surge boolean)
+language plpgsql stable security definer set search_path = public as $$
+declare
+s shops; v services; h jsonb; t timestamptz; t_close timestamptz;
+dur interval; step interval; q record;
+today date := (now() at time zone 'Europe/Istanbul')::date;
+min_start timestamptz := now() + interval '15 minutes';
+begin
+select * into s from shops where id = p_shop and is_active and accepting;
+if not found then return; end if;
+select sv.* into v from services sv join staff st on st.id = sv.staff_id
+where sv.id = p_service and sv.staff_id = p_staff and sv.active and st.active and st.shop_id = p_shop;
+if not found then return; end if;
+if p_day < today or p_day > today + 60 then return; end if;
+h := s.hours -> (extract(dow from p_day)::int)::text;
+if h is null or jsonb_typeof(h) <> 'array' then return; end if;
+t       := (p_day + (h->>0)::time) at time zone 'Europe/Istanbul';
+t_close := (p_day + (h->>1)::time) at time zone 'Europe/Istanbul';
+dur  := make_interval(mins => v.duration);
+step := make_interval(mins => s.slot_minutes);
+select * into q from quote_price(s, v.price, p_day);
+while t + dur <= t_close loop
+if t >= min_start
+and not exists (select 1 from appointments a
+where a.staff_id = p_staff and a.status in ('confirmed','completed') and a.source <> 'walkin'
+and a.starts_at < t + dur and a.ends_at > t)
+and not exists (select 1 from holds x
+where x.staff_id = p_staff and x.expires_at > now()
+and x.starts_at < t + dur and x.ends_at > t) then
+slot_at := t;
+slot_label := to_char(t at time zone 'Europe/Istanbul', 'HH24:MI');
+slot_price := q.q_price;
+slot_surge := q.q_surge;
+return next;
+end if;
+t := t + step;
+end loop;
+end $$;
+create or replace function public.next_free(p_shop uuid) returns timestamptz
+language plpgsql stable security definer set search_path = public as $$
+declare
+d date := (now() at time zone 'Europe/Istanbul')::date;
+i int; best timestamptz; t timestamptz; r record;
+begin
+for i in 0..6 loop
+best := null;
+for r in
+select st.id as staff_id,
+(select sv.id from services sv where sv.staff_id = st.id and sv.active order by sv.duration limit 1) as service_id
+from staff st where st.shop_id = p_shop and st.active
+loop
+continue when r.service_id is null;
+select g.slot_at into t from get_slots(p_shop, r.staff_id, r.service_id, d + i) g order by g.slot_at limit 1;
+if t is not null and (best is null or t < best) then best := t; end if;
+end loop;
+if best is not null then return best; end if;
+end loop;
+return null;
+end $$;
+create or replace function public.discover()
+returns table (id uuid, name text, slug text, district text, address text, lat double precision, lng double precision,
+rating numeric, review_count int, next_free timestamptz, photo text, accepting boolean)
+language sql stable security definer set search_path = public as $$
+select s.id, s.name, s.slug, s.district, s.address, s.lat, s.lng,
+(select round(avg(r.rating)::numeric, 1) from reviews r where r.shop_id = s.id),
+(select count(*)::int from reviews r where r.shop_id = s.id),
+case when s.accepting then public.next_free(s.id) end,
+s.photos[1], s.accepting
+from shops s
+where s.is_active
+and exists (select 1 from staff st join services sv on sv.staff_id = st.id
+where st.shop_id = s.id and st.active and sv.active)
+order by s.created_at
+limit 300
+$$;
+create or replace function public.create_hold(p_shop uuid, p_staff uuid, p_service uuid, p_starts_at timestamptz)
+returns json language plpgsql volatile security definer set search_path = public as $$
+declare
+d date := (p_starts_at at time zone 'Europe/Istanbul')::date;
+sl record; v services; hid uuid; exp timestamptz := now() + interval '5 minutes';
+begin
+delete from holds where expires_at <= now();
+select * into sl from get_slots(p_shop, p_staff, p_service, d) g where g.slot_at = p_starts_at;
+if not found then raise exception 'SLOT_TAKEN'; end if;
+select * into v from services where id = p_service;
+begin
+insert into holds (shop_id, staff_id, service_id, starts_at, ends_at, base_price, price, surge, expires_at)
+values (p_shop, p_staff, p_service, p_starts_at, p_starts_at + make_interval(mins => v.duration),
+v.price, sl.slot_price, sl.slot_surge, exp)
+returning holds.id into hid;
+exception when exclusion_violation then
+raise exception 'SLOT_TAKEN';
+end;
+return json_build_object('hold_id', hid, 'expires_at', exp, 'price', sl.slot_price,
+'base_price', v.price, 'surge', sl.slot_surge);
+end $$;
+create or replace function public.release_hold(p_hold uuid) returns void
+language sql volatile security definer set search_path = public as $$
+delete from holds where id = p_hold
+$$;
+create or replace function public.confirm_booking(p_hold uuid, p_name text, p_phone text)
+returns json language plpgsql volatile security definer set search_path = public as $$
+declare
+h holds; v services; ap appointments;
+nm text := btrim(coalesce(p_name, ''));
+ph text := public.norm_phone(p_phone);
+begin
+if char_length(nm) < 2 or char_length(nm) > 60 then raise exception 'NAME_INVALID'; end if;
+if ph is null then raise exception 'PHONE_INVALID'; end if;
+select * into h from holds where id = p_hold and expires_at > now() for update;
+if not found then raise exception 'HOLD_EXPIRED'; end if;
+if (select count(*) from appointments
+where shop_id = h.shop_id and customer_phone = ph and status = 'confirmed' and starts_at > now()) >= 3 then
+raise exception 'TOO_MANY';
+end if;
+select * into v from services where id = h.service_id;
+delete from holds where id = h.id;
+begin
+insert into appointments (shop_id, staff_id, service_id, service_name, customer_name, customer_phone,
+starts_at, ends_at, base_price, price, surge, status, source)
+values (h.shop_id, h.staff_id, h.service_id, v.name, nm, ph,
+h.starts_at, h.ends_at, h.base_price, h.price, h.surge, 'confirmed', 'web')
+returning * into ap;
+exception when exclusion_violation then
+raise exception 'SLOT_TAKEN';
+end;
+return json_build_object('token', ap.token, 'starts_at', ap.starts_at, 'price', ap.price, 'surge', ap.surge);
+end $$;
+create or replace function public.my_bookings(p_tokens uuid[])
+returns table (token uuid, shop_name text, shop_slug text, shop_phone text, staff_name text, service_name text,
+starts_at timestamptz, price int, status text, reviewed boolean)
+language sql stable security definer set search_path = public as $$
+select a.token, s.name, s.slug, s.phone, st.name, a.service_name, a.starts_at, a.price, a.status,
+exists (select 1 from reviews r where r.appointment_id = a.id)
+from appointments a
+join shops s on s.id = a.shop_id
+left join staff st on st.id = a.staff_id
+where a.token = any (p_tokens[1:50])
+order by a.starts_at desc
+$$;
+create or replace function public.cancel_booking(p_token uuid) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+update appointments set status = 'cancelled'
+where token = p_token and status = 'confirmed' and starts_at > now();
+if not found then raise exception 'CANNOT_CANCEL'; end if;
+end $$;
+create or replace function public.add_review(p_token uuid, p_rating int, p_body text) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare a appointments; nm text; body text := btrim(coalesce(p_body, ''));
+begin
+if p_rating not between 1 and 5 then raise exception 'RATING_INVALID'; end if;
+if char_length(body) < 3 or char_length(body) > 500 then raise exception 'REVIEW_INVALID'; end if;
+select * into a from appointments where token = p_token and status = 'completed';
+if not found then raise exception 'REVIEW_NOT_ALLOWED'; end if;
+if exists (select 1 from reviews where appointment_id = a.id) then raise exception 'ALREADY_REVIEWED'; end if;
+nm := split_part(btrim(a.customer_name), ' ', 1)
+|| coalesce(' ' || left(nullif(split_part(btrim(a.customer_name), ' ', 2), ''), 1) || '.', '');
+insert into reviews (shop_id, appointment_id, author, rating, body) values (a.shop_id, a.id, nm, p_rating, body);
+end $$;
+create or replace function public.join_waitlist(p_shop uuid, p_staff uuid, p_service uuid, p_day date, p_name text, p_phone text)
+returns void language plpgsql volatile security definer set search_path = public as $$
+declare nm text := btrim(coalesce(p_name, '')); ph text := public.norm_phone(p_phone);
+begin
+if char_length(nm) < 2 or char_length(nm) > 60 then raise exception 'NAME_INVALID'; end if;
+if ph is null then raise exception 'PHONE_INVALID'; end if;
+if p_day < (now() at time zone 'Europe/Istanbul')::date then raise exception 'DAY_INVALID'; end if;
+if not exists (select 1 from shops where id = p_shop and is_active) then raise exception 'SHOP_NOT_FOUND'; end if;
+if p_staff is not null and not exists (select 1 from staff where id = p_staff and shop_id = p_shop) then
+raise exception 'STAFF_NOT_IN_SHOP';
+end if;
+insert into waitlist (shop_id, staff_id, service_id, day, name, phone)
+values (p_shop, p_staff, p_service, p_day, nm, ph)
+on conflict (shop_id, day, phone) do update set staff_id = excluded.staff_id, service_id = excluded.service_id,
+name = excluded.name, status = 'waiting';
+end $$;
+create or replace function public.delete_my_account() returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+if auth.uid() is null then raise exception 'NOT_AUTHENTICATED'; end if;
+delete from shops where owner_id = auth.uid();
+delete from auth.users where id = auth.uid();
+end $$;
+select 'Bölüm 2/3 tamam, şimdi 3. parçayı çalıştır' as sonuc;
