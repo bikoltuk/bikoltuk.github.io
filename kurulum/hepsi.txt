@@ -1,0 +1,369 @@
+create table if not exists public.admins (
+user_id uuid primary key references auth.users(id) on delete cascade
+);
+alter table public.admins enable row level security;
+revoke all on public.admins from anon, authenticated;
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+select exists (select 1 from admins where user_id = auth.uid())
+$$;
+alter table public.shops add column if not exists reviewed_at timestamptz;
+alter table public.shops add column if not exists review_note text;
+alter table public.shops alter column is_active set default false;
+create or replace function public.shops_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+if not public.is_admin() then
+new.is_active := false;
+new.reviewed_at := null;
+new.review_note := null;
+end if;
+return new;
+end $$;
+drop trigger if exists shops_guard on public.shops;
+create trigger shops_guard before insert on public.shops for each row execute function public.shops_guard();
+create table if not exists public.shop_contacts (
+shop_id     uuid primary key references public.shops(id) on delete cascade,
+owner_name  text not null check (char_length(owner_name) between 2 and 80),
+owner_phone text not null check (owner_phone ~ '^5[0-9]{9}$'),
+updated_at  timestamptz not null default now()
+);
+alter table public.shop_contacts enable row level security;
+revoke all on public.shop_contacts from anon;
+drop policy if exists contacts_owner on public.shop_contacts;
+create policy contacts_owner on public.shop_contacts for all to authenticated
+using (public.is_my_shop(shop_id)) with check (public.is_my_shop(shop_id));
+alter table public.appointments add column if not exists kind text not null default 'appointment';
+do $$
+begin
+if not exists (select 1 from pg_constraint where conname = 'appointments_kind_check') then
+alter table public.appointments add constraint appointments_kind_check check (kind in ('appointment', 'block'));
+end if;
+end $$;
+create or replace function public.admin_shops() returns json
+language plpgsql stable security definer set search_path = public as $$
+begin
+if not public.is_admin() then raise exception 'NOT_ADMIN'; end if;
+return coalesce((
+select json_agg(x order by x.pending desc, x.created_at desc) from (
+select s.id, s.name, s.slug, s.district, s.address, s.phone, s.is_active, s.reviewed_at, s.review_note, s.created_at,
+(s.reviewed_at is null and not s.is_active) as pending,
+c.owner_name, c.owner_phone, u.email,
+(select count(*) from staff st where st.shop_id = s.id and st.active)::int as staff_count,
+(select count(*) from services sv where sv.shop_id = s.id and sv.active)::int as service_count,
+(select count(*) from appointments a where a.shop_id = s.id and a.kind = 'appointment')::int as appt_count
+from shops s
+left join shop_contacts c on c.shop_id = s.id
+left join auth.users u on u.id = s.owner_id
+) x), '[]'::json);
+end $$;
+create or replace function public.admin_review_shop(p_shop uuid, p_approve boolean, p_note text default null) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+if not public.is_admin() then raise exception 'NOT_ADMIN'; end if;
+update shops set is_active = p_approve, reviewed_at = now(), review_note = nullif(btrim(coalesce(p_note, '')), '')
+where id = p_shop;
+if not found then raise exception 'SHOP_NOT_FOUND'; end if;
+end $$;
+revoke execute on function public.shops_guard() from public, anon, authenticated;
+revoke execute on function public.admin_shops() from public, anon;
+revoke execute on function public.admin_review_shop(uuid, boolean, text) from public, anon;
+grant execute on function public.admin_shops(), public.admin_review_shop(uuid, boolean, text) to authenticated;
+grant execute on function public.is_admin() to anon, authenticated;
+insert into public.admins (user_id)
+select id from auth.users where lower(email) = 'alperen.gs.ceylan@gmail.com'
+on conflict do nothing;
+notify pgrst, 'reload schema';
+select case when exists (select 1 from public.admins)
+then 'Bölüm 4 tamam: yönetici hesabı tanımlandı'
+else 'Bölüm 4 tamam, AMA yönetici bulunamadı: önce alperen.gs.ceylan@gmail.com ile berber olarak kayıt ol, sonra bu parçayı tekrar çalıştır'
+end as sonuc;
+insert into auth.users (id, instance_id, aud, role, email, raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, recovery_token, email_change_token_new, email_change)
+select ('de000000-0000-4000-8000-0000000000' || lpad(n::text, 2, '0'))::uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'demo' || lpad(n::text, 2, '0') || '@bikoltuk.invalid', '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, now(), now(), '', '', '', ''
+from generate_series(1, 20) n
+on conflict do nothing;
+insert into public.shops (owner_id, name, slug, district, address, lat, lng, photos, hours, slot_minutes, auto_pricing) values
+('de000000-0000-4000-8000-000000000001', 'Kırk Makas Berber (Demo)', 'demo-kirk-makas', 'Kızılay', 'Meşrutiyet Cd. yakını (test adresi)', 39.92247, 32.84745, '{/demo/01-1.jpg,/demo/01-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000002', 'Usturam Erkek Kuaförü (Demo)', 'demo-usturam', 'Tunalı', 'Tunalı Hilmi Cd. civarı (test adresi)', 39.90244, 32.85565, '{/demo/02-1.jpg,/demo/02-2.jpg}', '{"0":["11:00","18:00"],"1":["10:00","21:00"],"2":["10:00","21:00"],"3":["10:00","21:00"],"4":["10:00","21:00"],"5":["10:00","21:00"],"6":["10:00","21:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000003', 'Taş Bina Barber (Demo)', 'demo-tas-bina', 'Çankaya', 'Kavaklıdere tarafı (test adresi)', 39.90562, 32.86519, '{/demo/03-1.jpg,/demo/03-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000004', 'Sinekkaydı Berber (Demo)', 'demo-sinekkaydi', 'Dikmen', 'Dikmen Cd. üzeri (test adresi)', 39.87659, 32.83424, '{/demo/04-1.jpg,/demo/04-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, false),
+('de000000-0000-4000-8000-000000000005', 'Ayna Erkek Kuaförü (Demo)', 'demo-ayna', 'Bahçelievler', '7. Cadde çevresi (test adresi)', 39.91522, 32.82287, '{/demo/05-1.jpg,/demo/05-2.jpg}', '{"0":["11:00","18:00"],"1":["10:00","21:00"],"2":["10:00","21:00"],"3":["10:00","21:00"],"4":["10:00","21:00"],"5":["10:00","21:00"],"6":["10:00","21:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000006', 'Köşe Başı Berber (Demo)', 'demo-kose-basi', 'Emek', 'Bişkek Cd. yakını (test adresi)', 39.92723, 32.82062, '{/demo/06-1.jpg,/demo/06-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000007', 'Eski Ulus Berberi (Demo)', 'demo-eski-ulus', 'Ulus', 'Anafartalar Cd. tarafı (test adresi)', 39.94224, 32.85079, '{/demo/07-1.jpg,/demo/07-2.jpg}', '{"0":null,"1":["08:00","19:00"],"2":["08:00","19:00"],"3":["08:00","19:00"],"4":["08:00","19:00"],"5":["08:00","19:00"],"6":["08:00","19:00"]}', 15, true),
+('de000000-0000-4000-8000-000000000008', 'Bağlar Berber (Demo)', 'demo-baglar', 'Keçiören', 'Kızlarpınarı Cd. civarı (test adresi)', 39.96804, 32.86877, '{/demo/08-1.jpg,/demo/08-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, false),
+('de000000-0000-4000-8000-000000000009', 'Yeşil Vadi Kuaför (Demo)', 'demo-yesil-vadi', 'Yenimahalle', 'Ragıp Tüzün Cd. tarafı (test adresi)', 39.96738, 32.80776, '{/demo/09-1.jpg,/demo/09-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000010', 'Batı Makas (Demo)', 'demo-bati-makas', 'Batıkent', 'Kentkoop Cd. yakını (test adresi)', 39.96458, 32.73469, '{/demo/10-1.jpg,/demo/10-2.jpg}', '{"0":["11:00","18:00"],"1":["10:00","21:00"],"2":["10:00","21:00"],"3":["10:00","21:00"],"4":["10:00","21:00"],"5":["10:00","21:00"],"6":["10:00","21:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000011', 'Fade Stüdyo (Demo)', 'demo-fade-studyo', 'Etimesgut', 'İstasyon Cd. civarı (test adresi)', 39.94211, 32.66335, '{/demo/11-1.jpg,/demo/11-2.jpg}', '{"0":["11:00","23:00"],"1":["11:00","23:00"],"2":["11:00","23:00"],"3":["11:00","23:00"],"4":["11:00","23:00"],"5":["11:00","23:00"],"6":["11:00","23:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000012', 'Kulüp Berber (Demo)', 'demo-kulup', 'Eryaman', 'Eryaman 4. Etap tarafı (test adresi)', 39.98024, 32.63730, '{/demo/12-1.jpg,/demo/12-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, false),
+('de000000-0000-4000-8000-000000000013', 'Çarşı Berber (Demo)', 'demo-carsi', 'Sincan', 'Çarşı içi (test adresi)', 39.96851, 32.57675, '{/demo/13-1.jpg,/demo/13-2.jpg}', '{"0":null,"1":["08:00","19:00"],"2":["08:00","19:00"],"3":["08:00","19:00"],"4":["08:00","19:00"],"5":["08:00","19:00"],"6":["08:00","19:00"]}', 15, true),
+('de000000-0000-4000-8000-000000000014', 'Bakım Atölyesi (Demo)', 'demo-bakim-atolyesi', 'Çayyolu', 'Galip Erdem Cd. civarı (test adresi)', 39.88155, 32.68120, '{/demo/14-1.jpg,/demo/14-2.jpg}', '{"0":["11:00","18:00"],"1":["10:00","21:00"],"2":["10:00","21:00"],"3":["10:00","21:00"],"4":["10:00","21:00"],"5":["10:00","21:00"],"6":["10:00","21:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000015', 'Beyefendi Kuaför (Demo)', 'demo-beyefendi', 'Ümitköy', 'Ümitköy çarşı tarafı (test adresi)', 39.88942, 32.71006, '{/demo/15-1.jpg,/demo/15-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000016', 'Tepe Berber (Demo)', 'demo-tepe', 'Mamak', 'Mamak Cd. yakını (test adresi)', 39.92131, 32.91397, '{/demo/16-1.jpg,/demo/16-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, false),
+('de000000-0000-4000-8000-000000000017', 'Göl Kenarı Berber (Demo)', 'demo-gol-kenari', 'Gölbaşı', 'Haymana yolu tarafı (test adresi)', 39.78473, 32.80305, '{/demo/17-1.jpg,/demo/17-2.jpg}', '{"0":["11:00","18:00"],"1":["10:00","21:00"],"2":["10:00","21:00"],"3":["10:00","21:00"],"4":["10:00","21:00"],"5":["10:00","21:00"],"6":["10:00","21:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000018', 'Ferah Berber (Demo)', 'demo-ferah', 'Pursaklar', 'Pursaklar merkez (test adresi)', 40.04326, 32.90513, '{/demo/18-1.jpg,/demo/18-2.jpg}', '{"0":null,"1":["09:00","20:00"],"2":["09:00","20:00"],"3":["09:00","20:00"],"4":["09:00","20:00"],"5":["09:00","20:00"],"6":["09:00","20:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000019', 'Bulvar Barber (Demo)', 'demo-bulvar', 'Kızılay', 'Atatürk Blv. çevresi (test adresi)', 39.91814, 32.85600, '{/demo/19-1.jpg,/demo/19-2.jpg}', '{"0":["11:00","23:00"],"1":["11:00","23:00"],"2":["11:00","23:00"],"3":["11:00","23:00"],"4":["11:00","23:00"],"5":["11:00","23:00"],"6":["11:00","23:00"]}', 30, true),
+('de000000-0000-4000-8000-000000000020', 'Gece Berberi (Demo)', 'demo-gece', 'Emek', 'Emek 8. Cadde tarafı (test adresi)', 39.92245, 32.81557, '{/demo/20-1.jpg,/demo/20-2.jpg}', '{"0":["11:00","23:00"],"1":["11:00","23:00"],"2":["11:00","23:00"],"3":["11:00","23:00"],"4":["11:00","23:00"],"5":["11:00","23:00"],"6":["11:00","23:00"]}', 30, false)
+on conflict do nothing;
+update public.shops set is_active = true, reviewed_at = now() where slug like 'demo-%' and reviewed_at is null;
+insert into public.staff (shop_id, name, title, commission)
+select s.id, v.name, v.title, v.com from (values
+('demo-kirk-makas', 'Hakan', 'Usta', 45),
+('demo-kirk-makas', 'Emre', 'Kalfa', 35),
+('demo-kirk-makas', 'Yusuf', 'Çırak', 25),
+('demo-usturam', 'Serkan', 'Usta', 45),
+('demo-usturam', 'Mert', 'Usta', 45),
+('demo-usturam', 'Kaan', 'Kalfa', 35),
+('demo-tas-bina', 'Volkan', 'Usta', 45),
+('demo-tas-bina', 'Berk', 'Kalfa', 35),
+('demo-sinekkaydi', 'Halil', 'Usta', 45),
+('demo-sinekkaydi', 'Onur', 'Çırak', 25),
+('demo-ayna', 'Barış', 'Usta', 45),
+('demo-ayna', 'Cem', 'Usta', 45),
+('demo-ayna', 'Eren', 'Çırak', 25),
+('demo-kose-basi', 'Recep', 'Usta', 45),
+('demo-eski-ulus', 'İsmail', 'Usta', 45),
+('demo-eski-ulus', 'Ali', 'Kalfa', 35),
+('demo-baglar', 'Fatih', 'Usta', 45),
+('demo-baglar', 'Furkan', 'Çırak', 25),
+('demo-yesil-vadi', 'Taner', 'Usta', 45),
+('demo-yesil-vadi', 'Deniz', 'Kalfa', 35),
+('demo-bati-makas', 'Oğuz', 'Usta', 45),
+('demo-bati-makas', 'Umut', 'Usta', 45),
+('demo-bati-makas', 'Doğan', 'Çırak', 25),
+('demo-fade-studyo', 'Burak', 'Usta', 45),
+('demo-fade-studyo', 'Tolga', 'Kalfa', 35),
+('demo-kulup', 'Erdem', 'Usta', 45),
+('demo-kulup', 'Selim', 'Çırak', 25),
+('demo-carsi', 'Sinan', 'Usta', 45),
+('demo-carsi', 'Ahmet', 'Kalfa', 35),
+('demo-bakim-atolyesi', 'Kerem', 'Usta', 45),
+('demo-bakim-atolyesi', 'Arda', 'Usta', 45),
+('demo-bakim-atolyesi', 'Efe', 'Kalfa', 35),
+('demo-beyefendi', 'Levent', 'Usta', 45),
+('demo-beyefendi', 'Can', 'Kalfa', 35),
+('demo-tepe', 'Mustafa', 'Usta', 45),
+('demo-tepe', 'Yasin', 'Çırak', 25),
+('demo-gol-kenari', 'Nihat', 'Usta', 45),
+('demo-ferah', 'Bayram', 'Usta', 45),
+('demo-ferah', 'Enes', 'Çırak', 25),
+('demo-bulvar', 'Cenk', 'Usta', 45),
+('demo-bulvar', 'Ozan', 'Usta', 45),
+('demo-bulvar', 'Batu', 'Kalfa', 35),
+('demo-bulvar', 'Mirza', 'Çırak', 25),
+('demo-gece', 'Rıza', 'Usta', 45),
+('demo-gece', 'Tuna', 'Kalfa', 35)
+) as v(slug, name, title, com)
+join public.shops s on s.slug = v.slug
+where not exists (select 1 from public.staff t where t.shop_id = s.id and t.name = v.name);
+insert into public.services (staff_id, name, price, duration)
+select t.id, v.svc, v.price, v.dur from (values
+('demo-kirk-makas', 'Hakan', 'Saç', 550, 35),
+('demo-kirk-makas', 'Hakan', 'Sakal', 300, 20),
+('demo-kirk-makas', 'Hakan', 'Saç + sakal', 800, 50),
+('demo-kirk-makas', 'Hakan', 'Çocuk tıraşı', 350, 25),
+('demo-kirk-makas', 'Hakan', 'Yıkama + fön', 200, 15),
+('demo-kirk-makas', 'Emre', 'Saç', 450, 35),
+('demo-kirk-makas', 'Emre', 'Sakal', 250, 20),
+('demo-kirk-makas', 'Emre', 'Saç + sakal', 700, 50),
+('demo-kirk-makas', 'Emre', 'Çocuk tıraşı', 300, 25),
+('demo-kirk-makas', 'Emre', 'Yıkama + fön', 150, 15),
+('demo-kirk-makas', 'Yusuf', 'Saç', 400, 40),
+('demo-kirk-makas', 'Yusuf', 'Sakal', 200, 25),
+('demo-kirk-makas', 'Yusuf', 'Çocuk tıraşı', 250, 30),
+('demo-kirk-makas', 'Yusuf', 'Yıkama + fön', 150, 20),
+('demo-usturam', 'Serkan', 'Saç', 750, 45),
+('demo-usturam', 'Serkan', 'Sakal', 400, 30),
+('demo-usturam', 'Serkan', 'Saç + sakal', 1100, 70),
+('demo-usturam', 'Serkan', 'Cilt bakımı', 550, 40),
+('demo-usturam', 'Serkan', 'Çocuk tıraşı', 450, 30),
+('demo-usturam', 'Mert', 'Saç', 750, 45),
+('demo-usturam', 'Mert', 'Sakal', 400, 30),
+('demo-usturam', 'Mert', 'Saç + sakal', 1100, 70),
+('demo-usturam', 'Mert', 'Cilt bakımı', 550, 40),
+('demo-usturam', 'Mert', 'Çocuk tıraşı', 450, 30),
+('demo-usturam', 'Kaan', 'Saç', 650, 45),
+('demo-usturam', 'Kaan', 'Sakal', 350, 30),
+('demo-usturam', 'Kaan', 'Saç + sakal', 900, 70),
+('demo-usturam', 'Kaan', 'Cilt bakımı', 450, 40),
+('demo-usturam', 'Kaan', 'Çocuk tıraşı', 400, 30),
+('demo-tas-bina', 'Volkan', 'Saç', 750, 45),
+('demo-tas-bina', 'Volkan', 'Sakal', 400, 30),
+('demo-tas-bina', 'Volkan', 'Saç + sakal', 1100, 70),
+('demo-tas-bina', 'Volkan', 'Cilt bakımı', 550, 40),
+('demo-tas-bina', 'Volkan', 'Çocuk tıraşı', 450, 30),
+('demo-tas-bina', 'Berk', 'Saç', 650, 45),
+('demo-tas-bina', 'Berk', 'Sakal', 350, 30),
+('demo-tas-bina', 'Berk', 'Saç + sakal', 900, 70),
+('demo-tas-bina', 'Berk', 'Cilt bakımı', 450, 40),
+('demo-tas-bina', 'Berk', 'Çocuk tıraşı', 400, 30),
+('demo-sinekkaydi', 'Halil', 'Saç', 500, 35),
+('demo-sinekkaydi', 'Halil', 'Sakal', 250, 20),
+('demo-sinekkaydi', 'Halil', 'Saç + sakal', 700, 50),
+('demo-sinekkaydi', 'Halil', 'Çocuk tıraşı', 300, 25),
+('demo-sinekkaydi', 'Halil', 'Yıkama + fön', 200, 15),
+('demo-sinekkaydi', 'Onur', 'Saç', 350, 40),
+('demo-sinekkaydi', 'Onur', 'Sakal', 200, 25),
+('demo-sinekkaydi', 'Onur', 'Çocuk tıraşı', 200, 30),
+('demo-sinekkaydi', 'Onur', 'Yıkama + fön', 150, 20),
+('demo-ayna', 'Barış', 'Saç', 500, 35),
+('demo-ayna', 'Barış', 'Sakal', 250, 20),
+('demo-ayna', 'Barış', 'Saç + sakal', 700, 50),
+('demo-ayna', 'Barış', 'Çocuk tıraşı', 300, 25),
+('demo-ayna', 'Barış', 'Yıkama + fön', 200, 15),
+('demo-ayna', 'Cem', 'Saç', 500, 35),
+('demo-ayna', 'Cem', 'Sakal', 250, 20),
+('demo-ayna', 'Cem', 'Saç + sakal', 700, 50),
+('demo-ayna', 'Cem', 'Çocuk tıraşı', 300, 25),
+('demo-ayna', 'Cem', 'Yıkama + fön', 200, 15),
+('demo-ayna', 'Eren', 'Saç', 350, 40),
+('demo-ayna', 'Eren', 'Sakal', 200, 25),
+('demo-ayna', 'Eren', 'Çocuk tıraşı', 200, 30),
+('demo-ayna', 'Eren', 'Yıkama + fön', 150, 20),
+('demo-kose-basi', 'Recep', 'Saç', 600, 35),
+('demo-kose-basi', 'Recep', 'Sakal', 350, 20),
+('demo-kose-basi', 'Recep', 'Saç + sakal', 900, 50),
+('demo-kose-basi', 'Recep', 'Çocuk tıraşı', 400, 25),
+('demo-kose-basi', 'Recep', 'Yıkama + fön', 200, 15),
+('demo-eski-ulus', 'İsmail', 'Saç', 400, 30),
+('demo-eski-ulus', 'İsmail', 'Sakal', 250, 20),
+('demo-eski-ulus', 'İsmail', 'Saç + sakal', 650, 45),
+('demo-eski-ulus', 'İsmail', 'Çocuk tıraşı', 300, 25),
+('demo-eski-ulus', 'Ali', 'Saç', 350, 30),
+('demo-eski-ulus', 'Ali', 'Sakal', 200, 20),
+('demo-eski-ulus', 'Ali', 'Saç + sakal', 550, 45),
+('demo-eski-ulus', 'Ali', 'Çocuk tıraşı', 250, 25),
+('demo-baglar', 'Fatih', 'Saç', 400, 30),
+('demo-baglar', 'Fatih', 'Sakal', 250, 20),
+('demo-baglar', 'Fatih', 'Saç + sakal', 550, 45),
+('demo-baglar', 'Fatih', 'Çocuk tıraşı', 300, 25),
+('demo-baglar', 'Furkan', 'Saç', 250, 35),
+('demo-baglar', 'Furkan', 'Sakal', 150, 25),
+('demo-baglar', 'Furkan', 'Çocuk tıraşı', 200, 30),
+('demo-yesil-vadi', 'Taner', 'Saç', 500, 35),
+('demo-yesil-vadi', 'Taner', 'Sakal', 300, 20),
+('demo-yesil-vadi', 'Taner', 'Saç + sakal', 750, 50),
+('demo-yesil-vadi', 'Taner', 'Çocuk tıraşı', 350, 25),
+('demo-yesil-vadi', 'Taner', 'Yıkama + fön', 200, 15),
+('demo-yesil-vadi', 'Deniz', 'Saç', 450, 35),
+('demo-yesil-vadi', 'Deniz', 'Sakal', 250, 20),
+('demo-yesil-vadi', 'Deniz', 'Saç + sakal', 650, 50),
+('demo-yesil-vadi', 'Deniz', 'Çocuk tıraşı', 300, 25),
+('demo-yesil-vadi', 'Deniz', 'Yıkama + fön', 150, 15),
+('demo-bati-makas', 'Oğuz', 'Saç', 500, 35),
+('demo-bati-makas', 'Oğuz', 'Sakal', 250, 20),
+('demo-bati-makas', 'Oğuz', 'Saç + sakal', 700, 50),
+('demo-bati-makas', 'Oğuz', 'Çocuk tıraşı', 300, 25),
+('demo-bati-makas', 'Oğuz', 'Yıkama + fön', 200, 15),
+('demo-bati-makas', 'Umut', 'Saç', 500, 35),
+('demo-bati-makas', 'Umut', 'Sakal', 250, 20),
+('demo-bati-makas', 'Umut', 'Saç + sakal', 700, 50),
+('demo-bati-makas', 'Umut', 'Çocuk tıraşı', 300, 25),
+('demo-bati-makas', 'Umut', 'Yıkama + fön', 200, 15),
+('demo-bati-makas', 'Doğan', 'Saç', 350, 40),
+('demo-bati-makas', 'Doğan', 'Sakal', 200, 25),
+('demo-bati-makas', 'Doğan', 'Çocuk tıraşı', 200, 30),
+('demo-bati-makas', 'Doğan', 'Yıkama + fön', 150, 20),
+('demo-fade-studyo', 'Burak', 'Saç', 550, 35),
+('demo-fade-studyo', 'Burak', 'Sakal', 300, 20),
+('demo-fade-studyo', 'Burak', 'Saç + sakal', 800, 50),
+('demo-fade-studyo', 'Burak', 'Çocuk tıraşı', 350, 25),
+('demo-fade-studyo', 'Burak', 'Yıkama + fön', 200, 15),
+('demo-fade-studyo', 'Tolga', 'Saç', 450, 35),
+('demo-fade-studyo', 'Tolga', 'Sakal', 250, 20),
+('demo-fade-studyo', 'Tolga', 'Saç + sakal', 700, 50),
+('demo-fade-studyo', 'Tolga', 'Çocuk tıraşı', 300, 25),
+('demo-fade-studyo', 'Tolga', 'Yıkama + fön', 150, 15),
+('demo-kulup', 'Erdem', 'Saç', 600, 35),
+('demo-kulup', 'Erdem', 'Sakal', 350, 20),
+('demo-kulup', 'Erdem', 'Saç + sakal', 900, 50),
+('demo-kulup', 'Erdem', 'Çocuk tıraşı', 400, 25),
+('demo-kulup', 'Erdem', 'Yıkama + fön', 200, 15),
+('demo-kulup', 'Selim', 'Saç', 400, 40),
+('demo-kulup', 'Selim', 'Sakal', 250, 25),
+('demo-kulup', 'Selim', 'Çocuk tıraşı', 250, 30),
+('demo-kulup', 'Selim', 'Yıkama + fön', 150, 20),
+('demo-carsi', 'Sinan', 'Saç', 400, 30),
+('demo-carsi', 'Sinan', 'Sakal', 250, 20),
+('demo-carsi', 'Sinan', 'Saç + sakal', 600, 45),
+('demo-carsi', 'Sinan', 'Çocuk tıraşı', 300, 25),
+('demo-carsi', 'Ahmet', 'Saç', 350, 30),
+('demo-carsi', 'Ahmet', 'Sakal', 200, 20),
+('demo-carsi', 'Ahmet', 'Saç + sakal', 500, 45),
+('demo-carsi', 'Ahmet', 'Çocuk tıraşı', 250, 25),
+('demo-bakim-atolyesi', 'Kerem', 'Saç', 950, 45),
+('demo-bakim-atolyesi', 'Kerem', 'Sakal', 500, 30),
+('demo-bakim-atolyesi', 'Kerem', 'Saç + sakal', 1300, 70),
+('demo-bakim-atolyesi', 'Kerem', 'Cilt bakımı', 650, 40),
+('demo-bakim-atolyesi', 'Kerem', 'Çocuk tıraşı', 550, 30),
+('demo-bakim-atolyesi', 'Arda', 'Saç', 950, 45),
+('demo-bakim-atolyesi', 'Arda', 'Sakal', 500, 30),
+('demo-bakim-atolyesi', 'Arda', 'Saç + sakal', 1300, 70),
+('demo-bakim-atolyesi', 'Arda', 'Cilt bakımı', 650, 40),
+('demo-bakim-atolyesi', 'Arda', 'Çocuk tıraşı', 550, 30),
+('demo-bakim-atolyesi', 'Efe', 'Saç', 800, 45),
+('demo-bakim-atolyesi', 'Efe', 'Sakal', 400, 30),
+('demo-bakim-atolyesi', 'Efe', 'Saç + sakal', 1100, 70),
+('demo-bakim-atolyesi', 'Efe', 'Cilt bakımı', 550, 40),
+('demo-bakim-atolyesi', 'Efe', 'Çocuk tıraşı', 450, 30),
+('demo-beyefendi', 'Levent', 'Saç', 900, 45),
+('demo-beyefendi', 'Levent', 'Sakal', 450, 30),
+('demo-beyefendi', 'Levent', 'Saç + sakal', 1250, 70),
+('demo-beyefendi', 'Levent', 'Cilt bakımı', 650, 40),
+('demo-beyefendi', 'Levent', 'Çocuk tıraşı', 500, 30),
+('demo-beyefendi', 'Can', 'Saç', 750, 45),
+('demo-beyefendi', 'Can', 'Sakal', 400, 30),
+('demo-beyefendi', 'Can', 'Saç + sakal', 1050, 70),
+('demo-beyefendi', 'Can', 'Cilt bakımı', 550, 40),
+('demo-beyefendi', 'Can', 'Çocuk tıraşı', 450, 30),
+('demo-tepe', 'Mustafa', 'Saç', 450, 30),
+('demo-tepe', 'Mustafa', 'Sakal', 300, 20),
+('demo-tepe', 'Mustafa', 'Saç + sakal', 650, 45),
+('demo-tepe', 'Mustafa', 'Çocuk tıraşı', 350, 25),
+('demo-tepe', 'Yasin', 'Saç', 300, 35),
+('demo-tepe', 'Yasin', 'Sakal', 200, 25),
+('demo-tepe', 'Yasin', 'Çocuk tıraşı', 250, 30),
+('demo-gol-kenari', 'Nihat', 'Saç', 500, 35),
+('demo-gol-kenari', 'Nihat', 'Sakal', 250, 20),
+('demo-gol-kenari', 'Nihat', 'Saç + sakal', 700, 50),
+('demo-gol-kenari', 'Nihat', 'Çocuk tıraşı', 300, 25),
+('demo-gol-kenari', 'Nihat', 'Yıkama + fön', 200, 15),
+('demo-ferah', 'Bayram', 'Saç', 400, 30),
+('demo-ferah', 'Bayram', 'Sakal', 250, 20),
+('demo-ferah', 'Bayram', 'Saç + sakal', 600, 45),
+('demo-ferah', 'Bayram', 'Çocuk tıraşı', 300, 25),
+('demo-ferah', 'Enes', 'Saç', 300, 35),
+('demo-ferah', 'Enes', 'Sakal', 200, 25),
+('demo-ferah', 'Enes', 'Çocuk tıraşı', 200, 30),
+('demo-bulvar', 'Cenk', 'Saç', 850, 45),
+('demo-bulvar', 'Cenk', 'Sakal', 450, 30),
+('demo-bulvar', 'Cenk', 'Saç + sakal', 1200, 70),
+('demo-bulvar', 'Cenk', 'Cilt bakımı', 600, 40),
+('demo-bulvar', 'Cenk', 'Çocuk tıraşı', 500, 30),
+('demo-bulvar', 'Ozan', 'Saç', 850, 45),
+('demo-bulvar', 'Ozan', 'Sakal', 450, 30),
+('demo-bulvar', 'Ozan', 'Saç + sakal', 1200, 70),
+('demo-bulvar', 'Ozan', 'Cilt bakımı', 600, 40),
+('demo-bulvar', 'Ozan', 'Çocuk tıraşı', 500, 30),
+('demo-bulvar', 'Batu', 'Saç', 700, 45),
+('demo-bulvar', 'Batu', 'Sakal', 400, 30),
+('demo-bulvar', 'Batu', 'Saç + sakal', 1000, 70),
+('demo-bulvar', 'Batu', 'Cilt bakımı', 500, 40),
+('demo-bulvar', 'Batu', 'Çocuk tıraşı', 400, 30),
+('demo-bulvar', 'Mirza', 'Saç', 600, 50),
+('demo-bulvar', 'Mirza', 'Sakal', 300, 35),
+('demo-bulvar', 'Mirza', 'Çocuk tıraşı', 350, 35),
+('demo-gece', 'Rıza', 'Saç', 600, 35),
+('demo-gece', 'Rıza', 'Sakal', 350, 20),
+('demo-gece', 'Rıza', 'Saç + sakal', 900, 50),
+('demo-gece', 'Rıza', 'Çocuk tıraşı', 400, 25),
+('demo-gece', 'Rıza', 'Yıkama + fön', 200, 15),
+('demo-gece', 'Tuna', 'Saç', 500, 35),
+('demo-gece', 'Tuna', 'Sakal', 300, 20),
+('demo-gece', 'Tuna', 'Saç + sakal', 750, 50),
+('demo-gece', 'Tuna', 'Çocuk tıraşı', 350, 25),
+('demo-gece', 'Tuna', 'Yıkama + fön', 200, 15)
+) as v(slug, staff, svc, price, dur)
+join public.shops s on s.slug = v.slug
+join public.staff t on t.shop_id = s.id and t.name = v.staff
+on conflict (staff_id, name) do nothing;
+select 'Test dükkanları hazır: ' || count(*) || ' dükkan yayında' as sonuc from public.shops where slug like 'demo-%' and is_active;

@@ -32,6 +32,12 @@ details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: 
 <h1>Bi Koltuk veritabanı eki</h1>
 <p class="mut">Telefondan 3 dakikada yapılır. Adımları sırayla izle.</p>
 
+<section class="card" style="border:2px solid var(--ok)">
+  <h2>Tek seferde hepsi</h2>
+  <p>4. parça ile 20 test dükkanını birlikte kurar. Kopyala, aşağıdaki "SQL düzenleyiciyi aç" düğmesiyle Supabase'e yapıştır, Run'a dokun. Sonunda "Test dükkanları hazır: 20 dükkan yayında" yazar.</p>
+  <button class="btn" data-part="hepsi">Hepsini kopyala</button>
+</section>
+
 <section class="card">
   <h2><span class="n">1</span>Yönetici hesabın</h2>
   <p>Uygulamada <b>Berber</b> sekmesinden <code>alperen.gs.ceylan@gmail.com</code> ile kayıtlı olmalısın. Kayıtlıysan bu adımı geç.</p>
@@ -79,7 +85,7 @@ details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: 
 <script>
 (function () {
   var texts = {};
-  ['1', '2', '3', '4', 'demo-ekle', 'demo-sil'].forEach(function (n) {
+  ['1', '2', '3', '4', 'demo-ekle', 'demo-sil', 'hepsi'].forEach(function (n) {
     fetch(n + '.txt', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; })
       .then(function (t) { texts[n] = t; if (n === '4') document.getElementById('ta4').value = t; })
       .catch(function () {});
