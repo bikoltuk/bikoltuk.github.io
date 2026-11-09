@@ -306,7 +306,7 @@
   }
 
   let seq = 0;
-  async function render({ force = false, retried = false } = {}) {
+  async function render({ force = false, retried = false, quiet = false } = {}) {
     const my = ++seq;
     const r = parseRoute();
     const changed = !S.route || S.route.name !== r.name || S.route.slug !== r.slug || S.route.tab !== r.tab;
@@ -315,7 +315,7 @@
     if (changed && r.name === 'book' && S.bk.done) S.bk.slug = null; // yeniden girişte temiz başla
     if (r.name !== 'book' && S.bk.hold) releaseHold();
     if (!api.ready()) { paint(notConfigured(), { focus: true }); return; }
-    const slow = setTimeout(() => { if (my === seq) paint(loading()); }, 180);
+    const slow = quiet ? 0 : setTimeout(() => { if (my === seq) paint(loading()); }, 180);
     try {
       const html = await VIEWS[r.name](r, force || changed);
       clearTimeout(slow);
@@ -326,6 +326,7 @@
     } catch (e) {
       clearTimeout(slow);
       if (my !== seq) return;
+      if (quiet) return; // arka plan eşitlemesi hata verirse ekrandakini bozma
       if (e.code === 'AUTH' && r.name === 'barber') { S.my = null; paint(authHtml(), { focus: true }); return; }
       // Süresi dolmuş berber oturumu müşteri sayfalarını bozmasın: oturumsuz bir kez daha dene
       if (e.code === 'AUTH' && !retried) { render({ force: true, retried: true }); return; }
@@ -1620,18 +1621,44 @@
     if (t.id === 'cust-q') { S.custSearch = t.value; clearTimeout(document.custT); document.custT = setTimeout(() => patchList('cust-list'), 120); }
   });
 
-  // Berber randevu ekranını arka planda tazele (yeni online randevular görünsün)
-  setInterval(() => {
+  // Eşitleme: açık ekran arka planda tazelenir (berberin eklediği, müşterinin aldığı randevu herkeste görünsün).
+  // Kullanıcı bir şey yazarken, onay beklerken ya da randevu adımındayken ekran bozulmasın diye beklenir.
+  function canSync() {
     const r = S.route;
-    if (!r || r.name !== 'barber' || r.tab !== 'bugun' || document.hidden || !S.my || !S.my.shop) return;
+    if (document.hidden || !r || !api.ready() || seq === 0) return false;
+    if (r.name === 'book') return false;
+    if (r.name === 'barber' && (!api.session || !S.my || (!S.my.shop && r.tab !== 'yonetim') || r.tab === 'ayarlar' || S.my.pick)) return false;
     const ae = document.activeElement;
-    if (ae && main.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
-    if ($('details[open]', main) && $('#m-name') && $('#m-name').value) return;
-    loadToday().then(redraw).catch(() => {});
-  }, 60000);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && S.route && S.route.name === 'barber' && S.route.tab === 'bugun' && S.my && S.my.shop) loadToday().then(redraw).catch(() => {});
-  });
+    if (ae && main.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return false;
+    if ($$('input, textarea', main).some((i) => i.type !== 'hidden' && i.type !== 'checkbox' && i.type !== 'radio' && i.id !== 'search' && i.id !== 'cust-q' && i.value && i.value !== i.defaultValue)) return false;
+    if ($('[data-armed="1"]')) return false;
+    return true;
+  }
+  let lastSync = 0;
+  function sync() {
+    if (!canSync()) return;
+    lastSync = Date.now();
+    render({ force: true, quiet: true });
+  }
+  // Yeni sürüm yayınlandıysa açık uygulamayı da yenile (Play'deki uygulama günlerce arka planda açık kalabiliyor)
+  let lastVer = 0;
+  async function checkVersion() {
+    if (Date.now() - lastVer < 60000 || location.protocol !== 'https:') return;
+    lastVer = Date.now();
+    try {
+      const html = await fetch('./index.html', { cache: 'no-store' }).then((res) => (res.ok ? res.text() : ''));
+      const live = (html.match(/app\.js\?v=(\d+)/) || [])[1];
+      const mine = ((($('script[src*="app.js"]') || {}).src || '').match(/v=(\d+)/) || [])[1];
+      if (live && mine && live !== mine && canSync()) location.reload();
+    } catch { /* çevrimdışı */ }
+  }
+  setInterval(sync, 30000);
+  setInterval(checkVersion, 5 * 60000);
+  const wake = () => { if (document.hidden) return; checkVersion(); if (Date.now() - lastSync > 5000) sync(); };
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('focus', wake);
+  window.addEventListener('online', wake);
+  window.addEventListener('pageshow', (ev) => { if (ev.persisted) wake(); });
 
   // ===================================================================
   // Başlangıç
