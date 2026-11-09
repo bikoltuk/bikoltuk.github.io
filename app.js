@@ -208,7 +208,10 @@
     },
     patch(table, filter, body) { return this.req(`/rest/v1/${table}?${filter}`, { method: 'PATCH', body, headers: { Prefer: 'return=representation' } }); },
     del(table, filter) { return this.req(`/rest/v1/${table}?${filter}`, { method: 'DELETE' }); },
-    photoUrl(path) { return `${this.base}/storage/v1/object/public/shop-photos/${String(path).split('/').map(encodeURIComponent).join('/')}`; },
+    photoUrl(path) {
+      if (/^(https:\/\/|\/)/.test(String(path))) return String(path); // sitedeki örnek fotoğraflar (test dükkanları)
+      return `${this.base}/storage/v1/object/public/shop-photos/${String(path).split('/').map(encodeURIComponent).join('/')}`;
+    },
     async upload(path, blob) {
       try {
         return await this.req(`/storage/v1/object/shop-photos/${path}`, { method: 'POST', body: blob, headers: { 'Content-Type': blob.type || 'image/jpeg', 'x-upsert': 'true' } });

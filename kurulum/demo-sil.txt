@@ -1,0 +1,3 @@
+delete from public.shops where slug like 'demo-%';
+delete from auth.users where email like 'demo__@bikoltuk.invalid';
+select 'Test dükkanları silindi' as sonuc;

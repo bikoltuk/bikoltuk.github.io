@@ -59,6 +59,15 @@ details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: 
   <p class="mut">"Yönetici bulunamadı" yazarsa 1. adımdaki kaydı yap ve 2. ile 3. adımı tekrarla. Tekrar çalıştırmak güvenli, hiçbir veri silinmez.</p>
 </section>
 
+<section class="card" id="test">
+  <h2><span class="n">T</span>Test dükkanları (20 adet)</h2>
+  <p>Ankara'nın 18 semtine dağılmış, fotoğraflı, çalışanlı ve fiyatlı 20 örnek dükkan ekler. Hepsinin adında "(Demo)" yazar, adresleri ve fotoğrafları örnektir. Önce 4. parçayı çalıştırmış olmalısın.</p>
+  <button class="btn" data-part="demo-ekle">Ekleme kodunu kopyala</button>
+  <p class="mut">Sonra 3. adımdaki gibi Supabase'e yapıştır ve Run'a dokun. "Test dükkanları hazır: 20 dükkan yayında" yazmalı. Tekrar çalıştırmak güvenli, çift eklemez.</p>
+  <p style="margin-top:14px">Gerçek berberler gelince hepsini tek seferde silersin. Senin ve diğer berberlerin dükkanlarına dokunmaz:</p>
+  <button class="btn sec" data-part="demo-sil">Silme kodunu kopyala</button>
+</section>
+
 <details class="card">
   <summary>İlk kurulum parçaları (1, 2, 3)</summary>
   <p class="mut">Bunlar zaten çalıştırıldı. Yeni bir Supabase projesi kurarsan sırayla kullan, en son 4. parçayı çalıştır.</p>
@@ -70,14 +79,14 @@ details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: 
 <script>
 (function () {
   var texts = {};
-  [1, 2, 3, 4].forEach(function (n) {
+  ['1', '2', '3', '4', 'demo-ekle', 'demo-sil'].forEach(function (n) {
     fetch(n + '.txt', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; })
-      .then(function (t) { texts[n] = t; if (n === 4) document.getElementById('ta4').value = t; })
+      .then(function (t) { texts[n] = t; if (n === '4') document.getElementById('ta4').value = t; })
       .catch(function () {});
   });
   function fallback(btn, n) {
-    btn.textContent = n + '. parçayı kopyala';
-    if (n === 4) {
+    btn.textContent = btn.dataset.label;
+    if (n === '4') {
       document.getElementById('fb4').hidden = false;
       var ta = document.getElementById('ta4');
       ta.hidden = false; ta.focus(); ta.select();
@@ -86,13 +95,14 @@ details summary { cursor: pointer; font-weight: 700; min-height: 44px; display: 
     }
   }
   document.querySelectorAll('[data-part]').forEach(function (btn) {
+    btn.dataset.label = btn.textContent;
     btn.addEventListener('click', function () {
-      var n = Number(btn.dataset.part);
+      var n = btn.dataset.part;
       var t = texts[n];
       if (!t) { fallback(btn, n); return; }
       if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(btn, n); return; }
       navigator.clipboard.writeText(t).then(function () {
-        btn.textContent = n + '. parça kopyalandı ✓';
+        btn.textContent = 'Kopyalandı ✓';
         btn.classList.add('done');
       }, function () { fallback(btn, n); });
     });
