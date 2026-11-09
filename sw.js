@@ -1,5 +1,5 @@
 // Uygulama kabuğunu önbelleğe alır. Önce ağ: yeni sürüm her zaman hemen gelir; internet yoksa önbellek.
-const CACHE = 'bikoltuk-v7';
+const CACHE = 'bikoltuk-v8';
 const SHELL = ['./', './index.html', './app.css', './app.js', './config.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './gizlilik.html', './hesap-silme.html'];
 const CDN = ['https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js'];
@@ -27,6 +27,8 @@ self.addEventListener('fetch', (e) => {
     // Tarayıcı önbelleğini atla, sunucuya sor (değişmediyse 304 ile hızlı döner): yeni sürüm hemen gelir
     const fresh = req.mode === 'navigate' ? new Request(req.url, { cache: 'no-cache', credentials: 'same-origin' }) : new Request(req, { cache: 'no-cache' });
     e.respondWith(fetch(fresh).then((res) => {
+      // Yönlendirilmiş cevap sayfa açılışında kullanılamaz (ERR_FAILED): tarayıcıya yeni adresi söyle
+      if (res.redirected) return Response.redirect(res.url, 302);
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
     }).catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'))));
