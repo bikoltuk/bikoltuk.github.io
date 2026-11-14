@@ -46,6 +46,9 @@
     const h = Math.sin(dl / 2) ** 2 + Math.cos(r(a[0])) * Math.cos(r(b[0])) * Math.sin(dn / 2) ** 2;
     return 12742 * Math.asin(Math.sqrt(h));
   };
+  const CONTACTS = 'contacts' in navigator && typeof navigator.contacts.select === 'function';
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+  const stamps = (n, t) => `<span class="stamps" role="img" aria-label="${t} damgadan ${n} tanesi dolu">${'●'.repeat(n)}${'○'.repeat(Math.max(0, t - n))}</span>`;
   const fmtKm = (k) => (k < 1 ? `${Math.round(k * 1000)} m` : `${k.toFixed(1).replace('.', ',')} km`);
   const DAYS = [['1', 'Pazartesi'], ['2', 'Salı'], ['3', 'Çarşamba'], ['4', 'Perşembe'], ['5', 'Cuma'], ['6', 'Cumartesi'], ['0', 'Pazar']];
   // Yaklaşık semt merkezleri (mesafe sıralaması için)
@@ -90,14 +93,18 @@
     AUTH: 'Oturumun sona erdi. Tekrar giriş yap.',
     NOT_AUTHENTICATED: 'Oturumun sona erdi. Tekrar giriş yap.',
     NOT_ADMIN: 'Bu ekran sadece yönetici içindir.',
-    SETUP_MISSING: 'Kurulum eksik: veritabanı eki (4. parça) çalıştırılmamış. bikoltuk.github.io/kurulum sayfasındaki adımları yap.',
+    SETUP_MISSING: 'Kurulum eksik: veritabanının yeni parçası çalıştırılmamış. bikoltuk.github.io/kurulum sayfasında "Hepsini kopyala" ile çalıştır.',
     OWNER_NAME_INVALID: 'Adını ve soyadını yaz.',
+    NOSHOW_BLOCKED: 'Bu numarayla online randevu alınamıyor: önceki randevulara gelinmemiş. Randevu için dükkanı ara.',
+    INVITE_INVALID: 'Davet kodu yanlış ya da süresi dolmuş. Dükkan sahibinden yeni kod iste.',
+    OWNS_SHOP: 'Bu hesabın kendi dükkanı var. Usta olarak katılmak için başka bir e-postayla kayıt ol.',
+    NOT_ALLOWED: 'Bu işlem için yetkin yok.',
     UPLOAD: 'Fotoğraf yüklenemedi. JPG veya PNG bir fotoğraf seç.',
     UNKNOWN: 'Bir şeyler ters gitti. Tekrar dene.',
   };
   const KNOWN = ['SLOT_TAKEN', 'HOLD_EXPIRED', 'NAME_INVALID', 'PHONE_INVALID', 'TOO_MANY', 'CANNOT_CANCEL', 'REVIEW_NOT_ALLOWED',
     'ALREADY_REVIEWED', 'REVIEW_INVALID', 'RATING_INVALID', 'DAY_INVALID', 'SHOP_NOT_FOUND', 'STAFF_NOT_IN_SHOP', 'SERVICE_NOT_FOR_STAFF',
-    'NOT_AUTHENTICATED', 'NOT_ADMIN'];
+    'NOT_AUTHENTICATED', 'NOT_ADMIN', 'NOSHOW_BLOCKED', 'INVITE_INVALID', 'OWNS_SHOP', 'NOT_ALLOWED'];
   function codeOf(data, status) {
     const d = data && typeof data === 'object' ? data : {};
     const text = [d.message, d.msg, d.error_description, d.error, d.error_code, typeof data === 'string' ? data : ''].filter(Boolean).join(' ');
@@ -412,7 +419,9 @@
   async function loadShop(slug, force) {
     const c = S.shops[slug];
     if (c && !force && Date.now() - c.at < 60000) return c;
-    const rows = await api.get('shops', `slug=eq.${q(slug)}&select=${SHOP_COLS}`);
+    // Sadakat sütunları 5. parçayla gelir; çalıştırılmamışsa dükkan sayfası yine açılsın
+    const rows = await api.get('shops', `slug=eq.${q(slug)}&select=${SHOP_COLS},loyalty_target,loyalty_reward`)
+      .catch((e) => { if (e.code === 'SETUP_MISSING') return api.get('shops', `slug=eq.${q(slug)}&select=${SHOP_COLS}`); throw e; });
     if (!rows || !rows.length) throw new AppError('SHOP_NOT_FOUND');
     const shop = rows[0];
     const [staff, services, reviews] = await Promise.all([
@@ -451,6 +460,7 @@
       ${s.phone ? `<a class="sm" href="tel:0${esc(s.phone)}">Ara: ${esc(fmtPhone(s.phone))}</a>` : ''}
       ${s.instagram ? `<a class="sm" href="${esc(igLink(s.instagram))}" target="_blank" rel="noopener">Instagram</a>` : ''}
     </div>
+    ${s.loyalty_target > 0 ? `<p class="card loyal"><b>Sadakat kartı:</b> her ${s.loyalty_target}. ziyaretinde ${esc(s.loyalty_reward || 'hediye')}. Damgaların Randevularım ekranında birikir.</p>` : ''}
     ${s.accepting && menu ? `<a class="btn" href="#/b/${esc(s.slug)}/randevu">Randevu al</a>` : `<p class="card hot">${s.accepting ? 'Bu dükkan henüz hizmet eklemedi.' : 'Dükkan şu an online randevu almıyor.'}</p>`}
     ${pics ? `<h2>Fotoğraflar</h2><div class="pics">${pics}</div>` : ''}
     ${menu ? `<h2>Hizmetler ve fiyatlar</h2><div class="card">${menu}</div>` : ''}
@@ -608,7 +618,30 @@
   // ===================================================================
   async function loadMine() {
     const t = tokens();
-    S.mine = t.length ? await api.rpc('my_bookings', { p_tokens: t.map((x) => x.token) }) : [];
+    const ids = t.map((x) => x.token);
+    const [mine, extras] = await Promise.all([
+      ids.length ? api.rpc('my_bookings', { p_tokens: ids }) : [],
+      ids.length ? api.rpc('my_extras', { p_tokens: ids }).catch(() => []) : [],
+    ]);
+    S.mine = mine;
+    S.extras = Object.fromEntries(extras.map((x) => [x.token, x]));
+  }
+  function loyaltyCards() {
+    const by = {};
+    for (const a of S.mine || []) {
+      const x = (S.extras || {})[a.token];
+      if (!x || !(x.loyalty_target > 0)) continue;
+      const c = by[x.shop_slug] || (by[x.shop_slug] = { name: a.shop_name, t: x.loyalty_target, reward: x.loyalty_reward, v: 0 });
+      c.v = Math.max(c.v, x.visits);
+    }
+    const list = Object.values(by);
+    if (!list.length) return '';
+    return `<h2>Sadakat kartların</h2><ul class="plain">${list.map((c) => {
+      const n = c.v % c.t;
+      const left = c.t - n;
+      return `<li class="card loyal"><div class="row"><h3>${esc(c.name)}</h3>${stamps(n, c.t)}</div>
+        <p>${left === 1 ? `<b>Sıradaki ziyaretin ödüllü: ${esc(c.reward || 'hediye')}</b>` : `${left} ziyaret sonra: ${esc(c.reward || 'hediye')}`}</p></li>`;
+    }).join('')}</ul>`;
   }
   function mineHtml() {
     const list = S.mine || [];
@@ -622,7 +655,7 @@
       <p><b>${esc(relDay(dateOf(a.starts_at)))}, ${esc(hm(a.starts_at))}</b></p>
       <p class="mut">${esc(a.staff_name || '')}, ${esc(a.service_name)}, ${TL(a.price)}</p>
       <div class="acts">
-        ${up.includes(a) ? `<button class="sm" data-act="cancel-bk" data-v="${esc(a.token)}" data-two="1">Randevuyu iptal et</button>` : `<a class="sm" href="#/b/${esc(a.shop_slug)}/randevu">Tekrar randevu al</a>`}
+        ${up.includes(a) ? `<button class="sm" data-act="cancel-bk" data-v="${esc(a.token)}" data-two="1">Randevuyu iptal et</button>` : (S.extras || {})[a.token] ? `<button class="sm pri" data-act="rebook" data-v="${esc(a.token)}">Aynısını tekrar al</button>` : `<a class="sm" href="#/b/${esc(a.shop_slug)}/randevu">Tekrar randevu al</a>`}
         ${a.shop_phone ? `<a class="sm" href="tel:0${esc(a.shop_phone)}">Dükkanı ara</a>` : ''}
       </div>
       ${canReview ? `<form data-form="review" novalidate style="margin-top:8px"><input type="hidden" name="token" value="${esc(a.token)}">
@@ -633,8 +666,12 @@
         <button class="btn sec">Yorumu gönder</button></form>` : ''}
       ${a.reviewed ? '<p class="okc">Yorumun yayında. Teşekkürler!</p>' : ''}</li>`;
     };
+    const g = S.gAsk;
     return `<h1>Randevularım</h1>
+      ${g ? `<section class="card loyal" role="status"><p><b>Teşekkürler!</b> ${esc(g.name)} için Google'da da yorum yazar mısın? Dükkanın daha çok kişiye ulaşır.</p>
+        <div class="acts"><a class="sm pri" href="${esc(g.url)}" target="_blank" rel="noopener">Google'da yorum yaz</a><button class="sm" data-act="g-dismiss" data-v="">Şimdi değil</button></div></section>` : ''}
       ${up.length ? `<h2>Yaklaşan</h2><ul class="plain">${up.map(item).join('')}</ul>` : ''}
+      ${loyaltyCards()}
       ${past.length ? `<h2>Geçmiş</h2><ul class="plain">${past.map(item).join('')}</ul>` : ''}`;
   }
 
@@ -673,6 +710,10 @@
       <label for="o-mobile">Cep telefonun</label><input id="o-mobile" name="owner_phone" type="tel" inputmode="tel" required placeholder="05xx xxx xx xx" autocomplete="tel">
       <button class="btn">Dükkanı oluştur</button>
     </form>
+    <section class="card"><h2 style="margin-top:0">Bir dükkanda usta mısın?</h2>
+      <p class="mut">Dükkan sahibinden aldığın davet kodunu yaz. Kendi randevularını görür, "Geldi" işaretlersin.</p>
+      <form data-form="claim" novalidate><label for="cl-code">Davet kodu</label><input id="cl-code" name="code" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <button class="btn sec">Ekibe katıl</button></form></section>
     ${S.my && S.my.isAdmin ? '<a class="btn sec" href="#/berber/yonetim">Yönetim ekranı</a>' : ''}
     <button class="lnk" data-act="logout" data-v="">Çıkış yap</button>`;
   }
@@ -695,14 +736,30 @@
     const day = (S.my && S.my.day) || today();
     const isAdmin = admin === true;
     const setupMissing = admin instanceof AppError && admin.code === 'SETUP_MISSING';
-    if (!rows.length) { S.my = { shop: null, day, isAdmin, setupMissing }; return; }
+    if (!rows.length) {
+      // Usta hesabı: dükkan sahibinin davetiyle bağlanmış
+      const acc = await api.get('staff_accounts', `user_id=eq.${uid}&select=staff_id,shop_id`).catch(() => []);
+      if (acc.length) {
+        const sid = acc[0].shop_id;
+        const [shops, staff, services] = await Promise.all([
+          api.get('shops', `id=eq.${sid}&select=*`),
+          api.get('staff', `shop_id=eq.${sid}&select=*&order=created_at`),
+          api.get('services', `shop_id=eq.${sid}&select=*&order=price`),
+        ]);
+        if (shops.length) { S.my = { ...(S.my || {}), shop: shops[0], staff, services, day, isAdmin, setupMissing, role: 'staff', me: acc[0].staff_id, accounts: [], contact: null }; return; }
+      }
+      S.my = { shop: null, day, isAdmin, setupMissing };
+      return;
+    }
     const shop = rows[0];
-    const [staff, services, contacts] = await Promise.all([
+    const [staff, services, contacts, accounts] = await Promise.all([
       api.get('staff', `shop_id=eq.${shop.id}&select=*&order=created_at`),
       api.get('services', `shop_id=eq.${shop.id}&select=*&order=price`),
       api.get('shop_contacts', `shop_id=eq.${shop.id}&select=*`).catch(() => []),
+      api.get('staff_accounts', `shop_id=eq.${shop.id}&select=staff_id,user_id,code,code_expires`).catch((e) => e),
     ]);
-    S.my = { ...(S.my || {}), shop, staff, services, day, isAdmin, setupMissing, contact: contacts[0] || null };
+    const missing5 = accounts instanceof AppError;
+    S.my = { ...(S.my || {}), shop, staff, services, day, isAdmin, setupMissing: setupMissing || missing5, role: 'owner', me: null, accounts: missing5 ? [] : accounts, contact: contacts[0] || null };
   }
   async function loadToday() {
     const m = S.my;
@@ -713,16 +770,32 @@
       api.get('walkins', `shop_id=eq.${m.shop.id}&select=*&order=created_at`),
       api.get('waitlist', `shop_id=eq.${m.shop.id}&day=eq.${m.day}&select=*&order=created_at`),
     ]);
-    Object.assign(m, { appts, walkins, waitlist, loadedAt: Date.now() });
+    const phones = [...new Set(appts.filter((a) => a.customer_phone && a.kind !== 'block' && dateOf(a.starts_at) === m.day).map((a) => a.customer_phone))];
+    const [packages, vis] = await Promise.all([
+      m.role === 'staff' ? [] : api.get('customer_packages', `shop_id=eq.${m.shop.id}&select=*&order=created_at`).catch(() => []),
+      m.shop.loyalty_target > 0 && phones.length
+        ? api.get('appointments', `shop_id=eq.${m.shop.id}&status=eq.completed&kind=eq.appointment&customer_phone=in.(${phones.join(',')})&select=customer_phone&limit=10000`).catch(() => [])
+        : [],
+    ]);
+    const visits = {};
+    vis.forEach((r) => { visits[r.customer_phone] = (visits[r.customer_phone] || 0) + 1; });
+    Object.assign(m, { appts, walkins, waitlist, packages, visits, loadedAt: Date.now() });
+  }
+  async function loadReport() {
+    const m = S.my;
+    const from = at(addDays(today(), -29), '00:00').toISOString();
+    m.rep = await api.get('appointments', `shop_id=eq.${m.shop.id}&starts_at=gte.${q(from)}&kind=eq.appointment&select=staff_id,service_name,status,price,starts_at,source&order=starts_at&limit=10000`);
   }
   async function loadCustomers() {
     const m = S.my;
     const from = at(addDays(today(), -365), '00:00').toISOString();
-    const [rows, notes] = await Promise.all([
+    const [rows, notes, packages] = await Promise.all([
       api.get('appointments', `shop_id=eq.${m.shop.id}&starts_at=gte.${q(from)}&kind=eq.appointment&select=customer_name,customer_phone,status,price,starts_at&order=starts_at.desc&limit=5000`),
       api.get('customer_notes', `shop_id=eq.${m.shop.id}&select=ckey,note`),
+      api.get('customer_packages', `shop_id=eq.${m.shop.id}&select=*&order=created_at`).catch(() => []),
     ]);
     m.custRows = rows;
+    m.packages = packages;
     m.notes = Object.fromEntries(notes.map((n) => [n.ckey, n.note]));
   }
   async function loadAdmin() { S.adminRows = await api.rpc('admin_shops'); }
@@ -731,10 +804,14 @@
   }
   const staffName = (id) => ((S.my.staff || []).find((s) => s.id === id) || {}).name || '';
   const svcOf = (id) => (S.my.services || []).find((v) => v.id === id);
+  const isStaff = () => !!(S.my && S.my.role === 'staff');
+  const crew = (m) => (m.role === 'staff' ? m.staff.filter((st) => st.id === m.me) : m.staff);
+  const pkgsOf = (k) => (S.my.packages || []).filter((p) => p.ckey === k);
 
   function barberShell(tab, body) {
+    if (isStaff()) return `${setupBanner()}${body}`;
     const t = (k, label, href) => `<a href="${href}" ${tab === k ? 'aria-current="page"' : ''}>${label}</a>`;
-    return `${setupBanner()}<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}${S.my && S.my.isAdmin ? t('yonetim', 'Yönetim', '#/berber/yonetim') : ''}</nav>${body}`;
+    return `${setupBanner()}<nav class="subnav" aria-label="Berber bölümleri">${t('bugun', 'Randevular', '#/berber')}${t('musteriler', 'Müşteriler', '#/berber/musteriler')}${t('rapor', 'Rapor', '#/berber/rapor')}${t('ayarlar', 'Ayarlar', '#/berber/ayarlar')}${S.my && S.my.isAdmin ? t('yonetim', 'Yönetim', '#/berber/yonetim') : ''}</nav>${body}`;
   }
 
   // ===================================================================
@@ -743,7 +820,8 @@
   function setupBanner() {
     if (!S.my || !S.my.setupMissing) return '';
     return `<section class="card status bad" role="alert"><h2>Kurulum eksik</h2>
-      <p>Veritabanı eki (4. parça) henüz çalıştırılmamış. Bu yüzden dükkan onayı, yönetim ekranı ve saat kapatma çalışmıyor; yeni açılan dükkanlar onaysız yayına çıkıyor.</p>
+      <p>Veritabanının yeni parçası henüz çalıştırılmamış. Bu yüzden son eklenen özelliklerin bir kısmı (onay, sadakat, paket, usta girişi gibi) çalışmıyor.</p>
+      <p>Kurulum sayfasında <b>Hepsini kopyala</b>'ya dokun, Supabase'e yapıştır ve çalıştır.</p>
       <a class="btn" href="kurulum/" target="_blank" rel="noopener">Kurulum sayfasını aç</a></section>`;
   }
   function shopState(m) {
@@ -790,7 +868,7 @@
   function scheduleHtml() {
     const m = S.my;
     const s = m.shop;
-    const staff = m.staff.filter((st) => st.active);
+    const staff = crew(m).filter((st) => st.active);
     if (!staff.length) return '';
     const h = s.hours && s.hours[String(dowOf(m.day))];
     if (!Array.isArray(h)) return `<h2>Günün çizelgesi</h2><p class="card mut">${esc(relDay(m.day))} dükkan kapalı. Çalışma saatlerini Ayarlar'dan değiştirebilirsin.</p>`;
@@ -832,7 +910,10 @@
       <input type="hidden" name="staff" value="${st.id}"><input type="hidden" name="t" value="${t}">
       ${sv.length ? `<label for="q-svc">Hizmet</label><select id="q-svc" name="svc">${sv.map((v) => `<option value="${v.id}">${esc(v.name)} (${v.duration} dk, ${TL(v.price)})</option>`).join('')}</select>
       <label for="q-name">Müşteri adı (isteğe bağlı)</label><input id="q-name" name="name" maxlength="60" autocomplete="off">
-      <label for="q-phone">Telefon (isteğe bağlı)</label><input id="q-phone" name="phone" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off">` : `<p class="mut">${esc(st.name)} için hizmet yok. Randevu eklemek için Ayarlar'dan hizmet ekle.</p>`}
+      <label for="q-phone">Telefon (isteğe bağlı)</label><input id="q-phone" name="phone" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off">
+      ${CONTACTS ? '<button type="button" class="sm" data-act="contact-pick" data-v="q" style="margin-top:8px">Rehberden seç</button>' : ''}` : `<p class="mut">${esc(st.name)} için hizmet yok. Randevu eklemek için Ayarlar'dan hizmet ekle.</p>`}
+      <div class="two"><div><label for="q-rep">Tekrar</label><select id="q-rep" name="rep"><option value="0">Tek seferlik</option><option value="1">Her hafta</option><option value="2">2 haftada bir</option><option value="3">3 haftada bir</option><option value="4">4 haftada bir</option></select></div>
+      <div><label for="q-cnt">Kaç kez</label><select id="q-cnt" name="cnt">${[4, 6, 8, 12].map((n) => `<option>${n}</option>`).join('')}</select></div></div>
       <div class="acts">${sv.length ? '<button class="sm pri" name="mode" value="appt">Randevu ekle</button>' : ''}
         <button class="sm" name="mode" value="block">Saati kapat</button>
         <button type="button" class="sm" data-act="pick-cancel" data-v="">Vazgeç</button></div>
@@ -841,16 +922,17 @@
   function todayHtml() {
     const m = S.my;
     const s = m.shop;
-    const dayAppts = (m.appts || []).filter((a) => dateOf(a.starts_at) === m.day);
+    const staffMode = m.role === 'staff';
+    const dayAppts = (m.appts || []).filter((a) => dateOf(a.starts_at) === m.day && (!staffMode || a.staff_id === m.me));
     const live = dayAppts.filter((a) => a.kind !== 'block' && (a.status === 'confirmed' || a.status === 'completed'));
     const sum = (arr) => arr.reduce((x, a) => x + (a.price || 0), 0);
     const opts = m.staff.filter((st) => st.active).flatMap((st) => m.services.filter((v) => v.staff_id === st.id && v.active)
       .map((v) => `<option value="${st.id}|${v.id}">${esc(st.name)}: ${esc(v.name)} (${v.duration} dk, ${TL(v.price)})</option>`)).join('');
     const waiting = (m.waitlist || []).filter((w) => w.status === 'waiting');
     const freed = dayAppts.some((a) => a.status === 'cancelled') && waiting.length;
-    return `<div class="row" style="margin-top:8px"><h1 style="margin:0">${esc(s.name)}</h1>
+    return `${staffMode ? `<h1 style="margin:8px 0 0">${esc(s.name)}</h1><p class="mut">${esc(staffName(m.me))}, burada sadece kendi randevularını görüyorsun.</p>` : `<div class="row" style="margin-top:8px"><h1 style="margin:0">${esc(s.name)}</h1>
       <button class="switch" role="switch" aria-checked="${s.accepting}" data-act="accepting" data-v="">Online randevu ${s.accepting ? 'açık' : 'kapalı'}</button></div>
-    ${['live', 'closed'].includes(shopState(m)) ? '' : statusCard()}
+    ${['live', 'closed'].includes(shopState(m)) ? '' : statusCard()}`}
     <div class="daynav"><button class="sm" data-act="day" data-v="-1" aria-label="Önceki gün">‹</button>
       <b>${esc(relDay(m.day))}${m.day !== today() && m.day !== addDays(today(), 1) ? '' : `<br><span class="mut">${esc(dLabel(m.day, { day: 'numeric', month: 'long' }))}</span>`}</b>
       <button class="sm" data-act="day" data-v="1" aria-label="Sonraki gün">›</button></div>
@@ -865,16 +947,18 @@
     ${scheduleHtml()}
     <h2>Randevular</h2>
     <section class="card">${dayAppts.length ? `<ul class="plain">${dayAppts.map(apptHtml).join('')}</ul>` : '<p class="mut">Bu gün için randevu yok.</p>'}</section>
-    ${m.day === today() && opts ? `<details class="card" id="add-box" ${m.addOpen ? 'open' : ''}><summary>Kapıdan gelen müşteriyi sıraya ekle</summary>
+    ${!staffMode && m.day === today() && opts ? `<details class="card" id="add-box" ${m.addOpen ? 'open' : ''}><summary>Kapıdan gelen müşteriyi sıraya ekle</summary>
       <form data-form="add-appt" novalidate>
         <label for="m-name">Müşteri adı</label><input id="m-name" name="name" required minlength="1" maxlength="60" autocomplete="off">
         <label for="m-phone">Telefon (isteğe bağlı)</label><input id="m-phone" name="phone" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" autocomplete="off">
+        ${CONTACTS ? '<button type="button" class="sm" data-act="contact-pick" data-v="m" style="margin-top:8px">Rehberden seç</button>' : ''}
         <label for="m-svc">Personel ve hizmet</label><select id="m-svc" name="svc">${opts}</select>
         <button class="btn" name="mode" value="queue">Sıraya ekle</button>
       </form></details>` : ''}
-    ${m.day === today() && m.walkins.length ? queueHtml() : ''}
-    ${(m.waitlist || []).length ? waitlistHtml() : ''}
-    ${commissionHtml()}`;
+    ${!staffMode && m.day === today() && m.walkins.length ? queueHtml() : ''}
+    ${!staffMode && (m.waitlist || []).length ? waitlistHtml() : ''}
+    ${commissionHtml()}
+    ${staffMode ? `<section class="card"><p class="mut">${esc((api.session && api.session.user && api.session.user.email) || '')}</p><button class="btn sec" data-act="logout" data-v="">Çıkış yap</button></section>` : ''}`;
   }
   function apptHtml(a) {
     const m = S.my;
@@ -886,15 +970,26 @@
     const msg = `Merhaba ${a.customer_name.split(' ')[0]}, ${relDay(dateOf(a.starts_at)).toLocaleLowerCase('tr')} saat ${hm(a.starts_at)} ${m.shop.name} randevunu hatırlatırız. Gelemeyeceksen lütfen haber ver.`;
     const src = a.source === 'web' ? 'online' : a.source === 'walkin' ? 'kapıdan' : 'elle';
     const mins = Math.round((new Date(a.ends_at) - new Date(a.starts_at)) / 60000);
+    const t = m.shop.loyalty_target;
+    let loyal = '';
+    if (t > 0 && a.customer_phone && (a.status === 'confirmed' || a.status === 'completed')) {
+      const v = (m.visits || {})[a.customer_phone] || 0;
+      if (a.status === 'confirmed') loyal = (v + 1) % t === 0 ? `<p class="hot">Bu ziyaret ödüllü: ${esc(m.shop.loyalty_reward || 'hediye')} (${t}. ziyaret)</p>` : `<p class="mut">Sadakat: ${stamps(v % t, t)} ${v % t}/${t}</p>`;
+      else if (v > 0 && v % t === 0) loyal = `<p class="okc">Bu ziyaret ödüllüydü: ${esc(m.shop.loyalty_reward || 'hediye')}</p>`;
+    }
+    const pk = m.role === 'staff' ? [] : pkgsOf(ckey(a.customer_name, a.customer_phone)).filter((p) => p.used < p.total);
+    const pkHtml = pk.map((p) => `<p class="mut">Paket: ${esc(p.title)}, ${p.total - p.used} hakkı kaldı <button class="sm" data-act="pkg-use" data-v="${p.id}">1 hak kullan</button></p>`).join('');
     return `<li class="appt" id="appt-${a.id}" tabindex="-1"><div class="row"><span class="time">${esc(hm(a.starts_at))}–${esc(hm(a.ends_at))}</span><span class="badge st-${a.status}">${STATUS[a.status]}</span></div>
-      <p><b>${esc(a.customer_name)}</b> <span class="mut">(${src})</span></p>
+      <p><b>${esc(a.customer_name)}</b> <span class="mut">(${src}${a.series_id ? ', tekrarlayan' : ''})</span></p>
       <p class="mut">${esc(a.service_name)}, ${esc(staffName(a.staff_id))}, ${TL(a.price)}${a.surge ? ' (yoğun gün farkı dahil)' : ''}${a.customer_phone ? `, ${esc(fmtPhone(a.customer_phone))}` : ''}</p>
+      ${loyal}${pkHtml}
       <div class="acts">
         ${a.status === 'confirmed' ? `<button class="sm pri" data-act="st" data-v="${a.id}" data-k="completed">Geldi</button>
           <button class="sm" data-act="st" data-v="${a.id}" data-k="no_show">Gelmedi</button>
           <button class="sm" data-act="st" data-v="${a.id}" data-k="cancelled" data-two="1">İptal et</button>` : ''}
         ${a.customer_phone ? `<a class="sm" href="tel:0${esc(a.customer_phone)}">Ara</a>` : ''}
         ${a.customer_phone && a.status === 'confirmed' ? `<a class="sm" href="${esc(waLink(a.customer_phone, msg))}" target="_blank" rel="noopener">WhatsApp ile hatırlat</a>` : ''}
+        ${a.series_id && a.status === 'confirmed' ? `<button class="sm" data-act="series-cancel" data-v="${a.id}" data-two="1">Sonraki tekrarları iptal et</button>` : ''}
         ${a.status === 'confirmed' ? `<a class="sm" href="${esc(gcal(`${a.customer_name}: ${a.service_name} (${staffName(a.staff_id)})`, a.starts_at, mins, m.shop.name))}" target="_blank" rel="noopener">Takvime ekle</a>` : ''}
       </div></li>`;
   }
@@ -925,7 +1020,7 @@
     const m = S.my;
     if (!m.staff.length) return '';
     const done = (m.appts || []).filter((a) => a.status === 'completed' && a.kind !== 'block');
-    const rows = m.staff.map((st) => {
+    const rows = crew(m).map((st) => {
       const day = done.filter((a) => a.staff_id === st.id && dateOf(a.starts_at) === m.day).reduce((x, a) => x + a.price, 0);
       const week = done.filter((a) => a.staff_id === st.id).reduce((x, a) => x + a.price, 0);
       const pr = (v) => Math.round((v * st.commission) / 100);
@@ -957,15 +1052,96 @@
     const digits = term.replace(/\D/g, '').replace(/^0/, '');
     if (term) list = list.filter((c) => c.name.toLocaleLowerCase('tr').includes(term) || (digits.length >= 3 && String(c.phone).includes(digits)));
     list.sort((a, b) => String(b.last || '').localeCompare(String(a.last || '')));
+    const lt = m.shop.loyalty_target;
+    const pkHtml = (c) => {
+      const ps = pkgsOf(c.k);
+      return `${ps.map((p) => `<div class="row pkg"><span>Paket: <b>${esc(p.title)}</b>, ${p.used}/${p.total} kullanıldı${p.used >= p.total ? ' (bitti)' : ''}</span>
+        <span class="acts">${p.used < p.total ? `<button class="sm" data-act="pkg-use" data-v="${p.id}">1 hak kullan</button>` : ''}<button class="sm" data-act="pkg-del" data-v="${p.id}" data-two="1">Sil</button></span></div>`).join('')}
+        <details><summary>Paket ekle</summary><form data-form="pkg-add" novalidate><input type="hidden" name="k" value="${esc(c.k)}"><input type="hidden" name="name" value="${esc(c.name)}">
+          <div class="two"><div><label for="pt-${esc(c.k)}">Paket adı</label><input id="pt-${esc(c.k)}" name="title" maxlength="60" value="Saç 5'li"></div>
+          <div><label for="pn-${esc(c.k)}">Hak sayısı</label><input id="pn-${esc(c.k)}" name="total" type="number" inputmode="numeric" min="1" max="100" value="5"></div></div>
+          <p class="hint">Parasını dükkanda alırsın; uygulama kalan hakkı takip eder.</p><button class="sm pri">Paketi ekle</button></form></details>`;
+    };
     const card = (c, i) => `<li class="card"><div class="row"><h3>${esc(c.name)}</h3>${c.noshow >= 2 ? `<span class="badge st-no_show">${c.noshow} kez gelmedi</span>` : ''}</div>
+      ${lt > 0 && c.phone ? `<p class="mut">Sadakat: ${stamps(c.visits % lt, lt)} ${c.visits % lt}/${lt}${(c.visits + 1) % lt === 0 ? ' <b>, sıradaki ziyareti ödüllü</b>' : ''}</p>` : ''}
       <p class="mut">${c.visits} ziyaret, ${TL(c.spent)} harcama${c.last ? `, son ziyaret ${esc(dLabel(dateOf(c.last), { day: 'numeric', month: 'long' }))}` : ''}${c.upcoming ? `, ${c.upcoming} yaklaşan randevu` : ''}${c.noshow ? `, ${c.noshow} kez gelmedi` : ''}${c.cancel ? `, ${c.cancel} iptal` : ''}.</p>
       ${c.phone ? `<div class="acts"><a class="sm" href="tel:0${esc(c.phone)}">Ara: ${esc(fmtPhone(c.phone))}</a><a class="sm" href="${esc(waLink(c.phone, `Merhaba ${c.name.split(' ')[0]}, `))}" target="_blank" rel="noopener">WhatsApp</a></div>` : ''}
       <form data-form="note" novalidate><input type="hidden" name="k" value="${esc(c.k)}">
         <label for="n-${i}">Not</label><input id="n-${i}" name="note" maxlength="300" value="${esc(m.notes[c.k] || '')}" placeholder="Örn. 2 numara, sakal kısa">
-        <button class="sm" style="margin-top:8px">Notu kaydet</button></form></li>`;
+        <button class="sm" style="margin-top:8px">Notu kaydet</button></form>
+      ${pkHtml(c)}</li>`;
+    const weeks = m.shop.rebook_weeks || 4;
+    const now = Date.now();
+    const due = term ? [] : Array.from(map.values())
+      .filter((c) => c.phone && c.last && !c.upcoming && now - new Date(c.last).getTime() > weeks * 7 * 86400000)
+      .sort((a, b) => String(a.last).localeCompare(String(b.last))).slice(0, 40);
+    const link = shopLink(m.shop.slug);
+    const dueHtml = due.length ? `<details class="card" id="due-box" open><summary>Zamanı gelenler (${due.length})</summary>
+      <p class="hint">${weeks} haftadan uzun süredir gelmeyen ve randevusu olmayan müşteriler. Tek dokunuşla davet et.</p>
+      <ul class="plain">${due.map((c) => {
+        const w = Math.floor((now - new Date(c.last).getTime()) / (7 * 86400000));
+        const text = `Merhaba ${c.name.split(' ')[0]}, ${m.shop.name} olarak seni bekliyoruz. Son ziyaretinin üzerinden ${w} hafta geçti. Randevu almak için: ${link}`;
+        return `<li class="appt"><div class="row"><b>${esc(c.name)}</b><span class="mut">${w} hafta önce</span></div>
+          <div class="acts"><a class="sm pri" href="${esc(waLink(c.phone, text))}" target="_blank" rel="noopener">WhatsApp ile davet et</a></div></li>`;
+      }).join('')}</ul></details>` : '';
     return `<h1>Müşteriler</h1>
+      ${dueHtml}
       <label for="cust-q">Müşteri ara</label><input id="cust-q" type="search" value="${esc(S.custSearch)}" placeholder="Ad ya da telefon" autocomplete="off">
       <ul class="plain" id="cust-list" aria-live="polite">${list.map(card).join('') || `<li class="card empty"><p class="mut">${term ? 'Aramana uyan müşteri yok.' : 'Henüz müşteri yok. Randevular oluştukça burada listelenir.'}</p></li>`}</ul>`;
+  }
+
+  // ===================================================================
+  // Berber: Rapor
+  // ===================================================================
+  function reportHtml() {
+    const m = S.my;
+    const p = m.rp || 7;
+    const from = addDays(today(), -(p - 1));
+    const nowIso = new Date().toISOString();
+    const rows = (m.rep || []).filter((a) => dateOf(a.starts_at) >= from && a.starts_at <= nowIso);
+    const done = rows.filter((a) => a.status === 'completed');
+    const ns = rows.filter((a) => a.status === 'no_show').length;
+    const ciro = done.reduce((x, a) => x + a.price, 0);
+    const kept = rows.filter((a) => a.status !== 'cancelled');
+    const online = kept.filter((a) => a.source === 'web').length;
+    const pct = (a, b) => (b ? Math.round((a * 100) / b) : 0);
+    const staffRows = m.staff.map((st) => {
+      const d = done.filter((a) => a.staff_id === st.id);
+      const c = d.reduce((x, a) => x + a.price, 0);
+      return { st, n: d.length, c, pr: Math.round((c * st.commission) / 100) };
+    }).filter((r) => r.n || r.st.active);
+    const svc = {};
+    done.forEach((a) => { svc[a.service_name] = (svc[a.service_name] || 0) + 1; });
+    const top = Object.entries(svc).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const hours = {};
+    kept.forEach((a) => { const h = Number(hm(a.starts_at).slice(0, 2)); hours[h] = (hours[h] || 0) + 1; });
+    const hk = Object.keys(hours).map(Number);
+    const hMin = hk.length ? Math.min(...hk) : 9;
+    const hMax = hk.length ? Math.max(...hk) : 20;
+    const hMaxV = Math.max(1, ...Object.values(hours));
+    const bars = [];
+    for (let h = hMin; h <= hMax; h += 1) {
+      const v = hours[h] || 0;
+      bars.push(`<div class="bar" title="${String(h).padStart(2, '0')}:00, ${v} randevu"><span style="height:${Math.round((v * 100) / hMaxV)}%"></span><small>${String(h).padStart(2, '0')}</small></div>`);
+    }
+    const busiest = hk.length ? hk.reduce((a, b) => (hours[b] > hours[a] ? b : a)) : null;
+    const per = (k, l) => `<button class="sm" aria-pressed="${p === k}" data-act="rp" data-v="${k}">${l}</button>`;
+    return `<h1>Rapor</h1>
+      <div class="acts" role="group" aria-label="Dönem" style="margin-bottom:12px">${per(1, 'Bugün')}${per(7, 'Son 7 gün')}${per(30, 'Son 30 gün')}</div>
+      <div class="stats">
+        <div class="card"><span class="mut">Ciro</span><b>${TL(ciro)}</b></div>
+        <div class="card"><span class="mut">Müşteri</span><b>${done.length}</b></div>
+        <div class="card"><span class="mut">Ortalama</span><b>${TL(done.length ? Math.round(ciro / done.length) : 0)}</b></div>
+        <div class="card"><span class="mut">Gelmeyen</span><b>%${pct(ns, done.length + ns)}</b></div>
+        <div class="card"><span class="mut">Online</span><b>%${pct(online, kept.length)}</b></div>
+        <div class="card"><span class="mut">İptal</span><b>${rows.length - kept.length}</b></div>
+      </div>
+      <p class="hint">Sadece "Geldi" işaretlenen randevular ciroya girer. Kapıdan gelenler dahil.</p>
+      <h2>Personel</h2><section class="card"><ul class="plain">${staffRows.map((r) => `<li class="appt"><div class="row"><b>${esc(r.st.name)}</b><b>${TL(r.c)}</b></div>
+        <p class="mut">${r.n} müşteri, prim %${r.st.commission}: ${TL(r.pr)}</p></li>`).join('') || '<li class="mut">Henüz veri yok.</li>'}</ul></section>
+      <h2>En yoğun saatler</h2><section class="card">${hk.length ? `<div class="bars" role="img" aria-label="Saatlere göre randevu sayısı. En yoğun saat ${String(busiest).padStart(2, '0')}:00.">${bars.join('')}</div>
+        <p class="hint">En yoğun saat ${String(busiest).padStart(2, '0')}:00. Boş saatler için kampanya düşünebilirsin.</p>` : '<p class="mut">Henüz veri yok.</p>'}</section>
+      <h2>En çok yapılan hizmetler</h2><section class="card">${top.length ? `<ul class="plain">${top.map(([n, c]) => `<li class="row"><span>${esc(n)}</span><b>${c}</b></li>`).join('')}</ul>` : '<p class="mut">Henüz veri yok.</p>'}</section>`;
   }
 
   // ===================================================================
@@ -986,6 +1162,17 @@
       box.innerHTML = `<svg class="qr" viewBox="0 0 ${n + 8} ${n + 8}" role="img" aria-label="Dükkan randevu linkinin QR kodu"><rect width="100%" height="100%" fill="#fff"/><path d="${p}" fill="#000"/></svg>`;
     } catch { box.innerHTML = '<p class="mut">QR kod oluşturulamadı.</p>'; }
   }
+  function staffAccountHtml(st) {
+    const m = S.my;
+    const acc = (m.accounts || []).find((x) => x.staff_id === st.id);
+    const code = acc && !acc.user_id && acc.code && new Date(acc.code_expires) > new Date() ? acc.code : '';
+    const text = `Merhaba ${st.name}, Bi Koltuk'ta ${m.shop.name} ekibine katılmak için ${siteUrl()}#/berber adresini aç, e-postanla "Kayıt ol", sonra "Davet kodu" kısmına şunu yaz: ${code}`;
+    return `<div class="svc-row"><p><b>Kendi telefonundan giriş</b></p>${acc && acc.user_id
+      ? `<p class="okc">${esc(st.name)} kendi hesabıyla giriyor; sadece kendi randevularını görür.</p><button class="sm" data-act="staff-unlink" data-v="${st.id}" data-two="1">Bağlantıyı kaldır</button>`
+      : code
+        ? `<p>Davet kodu: <b class="code">${esc(code)}</b> <span class="mut">7 gün geçerli, tek kullanımlık</span></p><div class="acts"><a class="sm pri" href="${esc(waLink('', text))}" target="_blank" rel="noopener">WhatsApp ile gönder</a><button class="sm" data-act="staff-invite" data-v="${st.id}">Yeni kod</button></div>`
+        : `<p class="mut">${esc(st.name)} kendi telefonundan girip kendi randevularını görebilir, "Geldi" işaretleyebilir. Fiyatları ve ayarları değiştiremez.</p><button class="sm" data-act="staff-invite" data-v="${st.id}">Davet kodu oluştur</button>`}</div>`;
+  }
   function settingsHtml() {
     const m = S.my;
     const s = m.shop;
@@ -999,6 +1186,7 @@
         <div><label for="sc-${st.id}">Prim (%)</label><input id="sc-${st.id}" name="commission" type="number" inputmode="numeric" min="0" max="100" value="${st.commission}"></div></div>
         <label for="stt-${st.id}">Unvan</label><input id="stt-${st.id}" name="title" maxlength="30" value="${esc(st.title)}">
         <div class="acts"><button class="sm pri">Kaydet</button><button type="button" class="sm" data-act="staff-active" data-v="${st.id}">${st.active ? 'Pasif yap' : 'Aktif yap'}</button></div></form>
+        ${staffAccountHtml(st)}
         ${sv.map((v) => `<form data-form="svc" class="svc-row" novalidate><input type="hidden" name="id" value="${v.id}"><input type="hidden" name="staff" value="${st.id}">
           <p><b>${esc(v.name)}</b></p><div class="two">
           <div><label for="vp-${v.id}">Fiyat (₺)</label><input id="vp-${v.id}" name="price" type="number" inputmode="numeric" min="0" max="100000" step="5" required value="${v.price}"></div>
@@ -1069,6 +1257,17 @@
       <p class="hint">Bir günde bu sayıdan fazla randevu olunca o günün yeni randevularına fark eklenir. Müşteri fiyatı onaydan önce görür.</p>
       <button class="btn">Kaydet</button></form></section>
 
+    <section class="card" id="s-rules"><h2 style="margin-top:0">Sadakat ve kurallar</h2><form data-form="rules" novalidate>
+      <div class="two"><div><label for="l-t">Sadakat kartı</label><select id="l-t" name="loyalty_target"><option value="0">Kapalı</option>${[5, 6, 8, 10, 12, 15].map((n) => `<option value="${n}" ${s.loyalty_target === n ? 'selected' : ''}>Her ${n}. ziyaret</option>`).join('')}</select></div>
+      <div><label for="l-r">Ödül</label><input id="l-r" name="loyalty_reward" maxlength="60" value="${esc(s.loyalty_reward || '')}" placeholder="Örn. Saç bedava"></div></div>
+      <p class="hint">"Geldi" işaretlenen her randevu bir damga sayılır. Müşteri damgalarını Randevularım ekranında görür; ödül sırası gelince randevu kartında yazar.</p>
+      <label for="l-w">"Zamanı gelenler" listesi</label><select id="l-w" name="rebook_weeks">${[2, 3, 4, 5, 6, 8].map((n) => `<option value="${n}" ${(s.rebook_weeks || 4) === n ? 'selected' : ''}>${n} haftadır gelmeyenler</option>`).join('')}</select>
+      <label for="l-n">Gelmeyen müşteri</label><select id="l-n" name="noshow_limit"><option value="0" ${s.noshow_limit === 0 ? 'selected' : ''}>Engelleme yok</option>${[1, 2, 3].map((n) => `<option value="${n}" ${s.noshow_limit === n ? 'selected' : ''}>${n} kez gelmeyen online randevu alamasın</option>`).join('')}</select>
+      <p class="hint">Son 6 ayda bu kadar kez "Gelmedi" işaretlenen numara, online randevu yerine dükkanı aramaya yönlendirilir. Sen elle randevu vermeye devam edebilirsin.</p>
+      <label for="l-g">Google yorum linkin</label><input id="l-g" name="google_review_url" type="url" inputmode="url" maxlength="300" value="${esc(s.google_review_url || '')}" placeholder="https://g.page/r/...">
+      <p class="hint">Google Haritalar'da dükkanını aç, "Yorum yaz" bağlantısını paylaş ve buraya yapıştır. 4 ya da 5 yıldız veren müşteriye "Google'da da yazar mısın?" diye sorulur.</p>
+      <button class="btn">Kaydet</button></form></section>
+
     <section class="card" id="s-reviews"><h2 style="margin-top:0">Yorumlar</h2>${rv ? `<ul class="plain">${rv}</ul>` : '<p class="mut">Henüz yorum yok. Müşteri, randevusu "Geldi" olarak işaretlenince yorum yazabilir.</p>'}</section>
 
     <section class="card" id="s-account"><h2 style="margin-top:0">Hesap</h2>
@@ -1125,6 +1324,9 @@
         S.bk.day = open < 0 ? 0 : open;
       }
       const { staff, services } = S.shops[r.slug];
+      // "Aynısını tekrar al": usta ya da hizmet artık yoksa seçimi sıfırla
+      if (S.bk.staff && !staff.some((st) => st.id === S.bk.staff && st.active !== false)) { S.bk.staff = null; S.bk.svc = null; }
+      if (S.bk.svc && !services.some((v) => v.id === S.bk.svc && v.staff_id === S.bk.staff)) S.bk.svc = null;
       const bookable = staff.filter((st) => services.some((v) => v.staff_id === st.id));
       if (!S.bk.staff && bookable.length === 1) S.bk.staff = bookable[0].id;
       if (S.bk.staff && !S.bk.svc) { const sv = services.filter((v) => v.staff_id === S.bk.staff); if (sv.length === 1) S.bk.svc = sv[0].id; }
@@ -1142,7 +1344,9 @@
         return S.my.shop ? barberShell('yonetim', adminHtml()) : adminHtml();
       }
       if (!S.my.shop) return onboardHtml();
+      if (isStaff()) { await loadToday(); return barberShell('bugun', todayHtml()); }
       if (r.tab === 'musteriler') { await loadCustomers(); return barberShell('musteriler', customersHtml()); }
+      if (r.tab === 'rapor') { await loadReport(); return barberShell('rapor', reportHtml()); }
       if (r.tab === 'ayarlar') { await loadSettings(); return barberShell('ayarlar', settingsHtml()); }
       await loadToday();
       return barberShell('bugun', todayHtml());
@@ -1158,7 +1362,9 @@
       if (!api.session) return authHtml();
       if (r.tab === 'yonetim' && S.my && S.my.isAdmin) return S.my.shop ? barberShell('yonetim', adminHtml()) : adminHtml();
       if (!S.my || !S.my.shop) return onboardHtml();
+      if (isStaff()) return barberShell('bugun', todayHtml());
       if (r.tab === 'musteriler') return barberShell('musteriler', customersHtml());
+      if (r.tab === 'rapor') return barberShell('rapor', reportHtml());
       if (r.tab === 'ayarlar') return barberShell('ayarlar', settingsHtml());
       return barberShell('bugun', todayHtml());
     },
@@ -1210,8 +1416,10 @@
   async function refreshMy(what = 'shop') {
     if (what === 'shop') await loadMyShop(true);
     const t = S.route.tab;
-    if (t === 'ayarlar') await loadSettings();
+    if (isStaff()) await loadToday();
+    else if (t === 'ayarlar') await loadSettings();
     else if (t === 'musteriler') await loadCustomers();
+    else if (t === 'rapor') await loadReport();
     else await loadToday();
     redraw();
   }
@@ -1252,6 +1460,46 @@
       }
     }),
     'new-bk': () => { S.bk.slug = null; render({ force: true }); },
+    rebook: (btn) => {
+      const x = (S.extras || {})[btn.dataset.v];
+      if (!x) return;
+      resetBooking(x.shop_slug);
+      Object.assign(S.bk, { staff: x.staff_id, svc: x.service_id });
+      go(`#/b/${x.shop_slug}/randevu`);
+    },
+    'g-dismiss': () => { S.gAsk = null; redraw(); },
+    rp: (btn) => { S.my.rp = Number(btn.dataset.v); redraw(); },
+    'contact-pick': async (btn) => {
+      const pre = btn.dataset.v;
+      try {
+        const [c] = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+        if (!c) return;
+        const nm = (c.name || [])[0] || '';
+        const tel = (c.tel || []).map(normPhone).find(Boolean) || '';
+        if (nm && $(`#${pre}-name`)) $(`#${pre}-name`).value = nm.slice(0, 60);
+        if ($(`#${pre}-phone`)) $(`#${pre}-phone`).value = tel ? fmtPhone(tel) : '';
+        if (!tel && (c.tel || []).length) toast('Rehberdeki numara cep telefonu değil, telefon alanını boş bıraktım.', true);
+      } catch { /* kullanıcı vazgeçti */ }
+    },
+    'pkg-use': (btn) => busy(btn, async () => {
+      const p = (S.my.packages || []).find((x) => x.id === btn.dataset.v);
+      if (!p || p.used >= p.total) return;
+      await api.patch('customer_packages', `id=eq.${p.id}`, { used: p.used + 1 });
+      await refreshMy('day');
+      toast(`${p.title}: 1 hak kullanıldı, ${p.total - p.used - 1} hak kaldı.`);
+    }),
+    'pkg-del': (btn) => { if (!twoStep(btn)) return; busy(btn, async () => { await api.del('customer_packages', `id=eq.${btn.dataset.v}`); await refreshMy('day'); toast('Paket silindi.'); }); },
+    'series-cancel': (btn) => {
+      if (!twoStep(btn)) return;
+      busy(btn, async () => {
+        const a = S.my.appts.find((x) => x.id === btn.dataset.v);
+        const rows = await api.patch('appointments', `series_id=eq.${a.series_id}&starts_at=gt.${q(a.starts_at)}&status=eq.confirmed`, { status: 'cancelled' });
+        await refreshMy('day');
+        toast(`Sonraki ${rows.length} tekrar iptal edildi. Bu randevu duruyor.`);
+      });
+    },
+    'staff-invite': (btn) => busy(btn, async () => { await api.rpc('staff_invite', { p_staff: btn.dataset.v }); await refreshMy(); toast('Davet kodu hazır. WhatsApp ile ustana gönder.'); }),
+    'staff-unlink': (btn) => { if (!twoStep(btn)) return; busy(btn, async () => { await api.del('staff_accounts', `staff_id=eq.${btn.dataset.v}`); await refreshMy(); toast('Ustanın hesap bağlantısı kaldırıldı.'); }); },
     'slot-pick': (btn) => {
       const [staff, t] = btn.dataset.v.split('|');
       S.my.pick = { staff, t: Number(t) };
@@ -1369,6 +1617,9 @@
     },
     async review(d) {
       await api.rpc('add_review', { p_token: d.token, p_rating: Number(d.rating), p_body: String(d.body || '').trim() });
+      const x = (S.extras || {})[d.token];
+      const a = (S.mine || []).find((y) => y.token === d.token);
+      if (Number(d.rating) >= 4 && x && x.google_review_url) S.gAsk = { url: x.google_review_url, name: a ? a.shop_name : '' };
       Object.keys(S.shops).forEach((k) => { S.shops[k].at = 0; });
       await loadMine();
       redraw();
@@ -1423,6 +1674,39 @@
       go('#/berber/ayarlar');
       toast('Dükkanın oluşturuldu ve onaya gönderildi. Bu sırada personel ve hizmetlerini ekle.');
     },
+    async claim(d) {
+      const code = String(d.code || '').replace(/\s/g, '');
+      if (code.length < 6) throw new AppError('INVITE_INVALID');
+      const res = await api.rpc('claim_staff', { p_code: code });
+      S.my = null;
+      await loadMyShop(true);
+      go('#/berber');
+      toast(`${res.shop} ekibine ${res.staff} olarak katıldın.`);
+    },
+    async rules(d) {
+      const url = String(d.google_review_url || '').trim();
+      if (url && !/^https:\/\/\S+$/.test(url)) { toast('Google linki https:// ile başlamalı.', true); return; }
+      await api.patch('shops', `id=eq.${S.my.shop.id}`, {
+        loyalty_target: Number(d.loyalty_target) || 0,
+        loyalty_reward: String(d.loyalty_reward || '').trim().slice(0, 60),
+        rebook_weeks: Number(d.rebook_weeks) || 4,
+        noshow_limit: Number(d.noshow_limit) || 0,
+        google_review_url: url,
+      });
+      S.disc = null;
+      Object.keys(S.shops).forEach((k) => { S.shops[k].at = 0; });
+      await refreshMy();
+      toast('Sadakat ve kurallar kaydedildi.');
+    },
+    async 'pkg-add'(d) {
+      const title = String(d.title || '').trim();
+      const total = Math.round(Number(d.total));
+      if (title.length < 2) { toast('Paket adını yaz.', true); return; }
+      if (!(total >= 1 && total <= 100)) { toast('Hak sayısını 1 ile 100 arasında yaz.', true); return; }
+      await api.insert('customer_packages', [{ shop_id: S.my.shop.id, ckey: d.k, customer_name: String(d.name || '').slice(0, 60) || 'Müşteri', title, total }]);
+      await refreshMy('day');
+      toast(`${title} paketi eklendi.`);
+    },
     async contact(d) {
       const owner = String(d.owner_name || '').trim();
       if (owner.length < 2) throw new AppError('OWNER_NAME_INVALID');
@@ -1435,31 +1719,41 @@
     async quick(d, form, submitter) {
       const m = S.my;
       const t = Number(d.t);
-      const startsAt = at(m.day, minLabel(t));
       const who = staffName(d.staff);
-      if (submitter && submitter.value === 'block') {
-        try {
-          await api.insert('appointments', [{ shop_id: m.shop.id, staff_id: d.staff, service_name: 'Kapalı', customer_name: 'Kapalı', starts_at: startsAt.toISOString(), ends_at: new Date(startsAt.getTime() + (m.shop.slot_minutes || 30) * 60000).toISOString(), status: 'confirmed', source: 'barber', kind: 'block', price: 0, base_price: 0 }]);
-        } catch (e) { if (e.code === 'SLOT_TAKEN') { toast(`${who} bu saatte dolu.`, true); return; } throw e; }
-        m.pick = null;
-        await refreshMy('day');
-        toast(`${minLabel(t)} ${who} için kapatıldı. Müşteriler bu saati alamaz.`);
-        return;
-      }
-      const sv = svcOf(d.svc);
-      if (!sv) { toast('Hizmet seç.', true); return; }
+      const block = submitter && submitter.value === 'block';
+      const sv = block ? null : svcOf(d.svc);
+      if (!block && !sv) { toast('Hizmet seç.', true); return; }
       const phone = d.phone ? normPhone(d.phone) : '';
-      if (d.phone && !phone) throw new AppError('PHONE_INVALID');
-      const name = String(d.name || '').trim() || 'Dükkan müşterisi';
-      try {
-        await api.insert('appointments', [{ shop_id: m.shop.id, staff_id: d.staff, service_id: sv.id, service_name: sv.name, customer_name: name, customer_phone: phone || '', starts_at: startsAt.toISOString(), ends_at: new Date(startsAt.getTime() + sv.duration * 60000).toISOString(), base_price: sv.price, price: sv.price, status: 'confirmed', source: 'barber' }]);
-      } catch (e) {
-        if (e.code === 'SLOT_TAKEN') { toast(`${who} için ${sv.duration} dakikalık süre sonraki randevuyla çakışıyor. Başka saat seç.`, true); return; }
-        throw e;
+      if (!block && d.phone && !phone) throw new AppError('PHONE_INVALID');
+      const name = block ? 'Kapalı' : String(d.name || '').trim() || 'Dükkan müşterisi';
+      const every = Number(d.rep) || 0;
+      const times = every ? Math.min(12, Number(d.cnt) || 4) : 1;
+      const series = every ? newId() : null;
+      const mins = block ? (m.shop.slot_minutes || 30) : sv.duration;
+      const ok = [];
+      const missed = [];
+      for (let i = 0; i < times; i += 1) {
+        const day = addDays(m.day, i * every * 7);
+        const startsAt = at(day, minLabel(t));
+        const row = block
+          ? { shop_id: m.shop.id, staff_id: d.staff, service_name: 'Kapalı', customer_name: 'Kapalı', kind: 'block', price: 0, base_price: 0 }
+          : { shop_id: m.shop.id, staff_id: d.staff, service_id: sv.id, service_name: sv.name, customer_name: name, customer_phone: phone || '', base_price: sv.price, price: sv.price };
+        Object.assign(row, { starts_at: startsAt.toISOString(), ends_at: new Date(startsAt.getTime() + mins * 60000).toISOString(), status: 'confirmed', source: 'barber' });
+        if (series) row.series_id = series;
+        if (i > 0 && !Array.isArray((m.shop.hours || {})[String(dowOf(day))])) { missed.push(`${dLabel(day, { day: 'numeric', month: 'long' })} (kapalı)`); continue; }
+        try { await api.insert('appointments', [row]); ok.push(day); } catch (e) {
+          if (e.code !== 'SLOT_TAKEN') throw e;
+          if (i === 0) {
+            toast(block ? `${who} bu saatte dolu.` : `${who} için ${sv.duration} dakikalık süre sonraki randevuyla çakışıyor. Başka saat seç.`, true);
+            return;
+          }
+          missed.push(`${dLabel(day, { day: 'numeric', month: 'long' })} (dolu)`);
+        }
       }
       m.pick = null;
       await refreshMy('day');
-      toast(`${minLabel(t)} ${who}: ${name} eklendi. Müşteriler bu saati alamaz.`);
+      const base = block ? `${minLabel(t)} ${who} için kapatıldı. Müşteriler bu saati alamaz.` : `${minLabel(t)} ${who}: ${name} eklendi. Müşteriler bu saati alamaz.`;
+      toast(every ? `${base} ${ok.length} tekrar eklendi${missed.length ? `; eklenemeyen: ${missed.join(', ')}` : ''}.` : base, missed.length > 0);
     },
     async 'admin-no'(d) {
       await api.rpc('admin_review_shop', { p_shop: d.id, p_approve: false, p_note: String(d.note || '').trim() || null });
